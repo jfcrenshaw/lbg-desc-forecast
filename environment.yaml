@@ -17,3 +17,5 @@ dependencies:
   - pyccl
   - python=3.11
   - rubin-sim
+  - pip:
+      - lbg_tools

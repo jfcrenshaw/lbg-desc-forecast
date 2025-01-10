@@ -11,7 +11,7 @@ pip install -e .
 
 or equivalent.
 
-Steps:
+Then you must run the following one time:
 
 1. Download OpSim run baseline v4.0 if you don't already have it:
 
@@ -23,4 +23,6 @@ wget -P data/ https://s3df.slac.stanford.edu/data/rubin/sim-data/sims_featureSch
 
 2. Source `bin/setup_baseline_sim.sh`. This will set `RUBIN_SIM_RUN_DIR` and, if not already present, will download the survey simulation run we are analyzing. If you already have the rubin sim runs downloaded somewhere other than the default (`data/`), you can set this location by calling the setup script with the path as an argument.
 
-3. Calculate 5-sigma depths by running `bin/calc_m5.py`.
+3. Calculate 5-sigma depths by running `python bin/calc_m5.py`.
+
+4. Generate cached values for interpolating across 5-sigma depth maps: `python bin/create_caches.py`

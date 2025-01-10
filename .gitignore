@@ -171,4 +171,4 @@ cython_debug/
 .pypirc
 
 data/*
-!data/.gitkeep
+!data/nlkk_v3_1_0_deproj0_SENS1_fsky0p4_it_lT30-3000_lP30-5000.dat

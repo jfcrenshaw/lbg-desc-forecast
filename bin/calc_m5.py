@@ -6,6 +6,7 @@ import numpy as np
 import rubin_sim.maf as maf
 from rubin_scheduler.scheduler.utils import SkyAreaGenerator
 from rubin_sim.maf.metrics.exgal_m5 import ExgalM5
+
 from lbg_desc_forecast.utils import data_dir
 
 # Define the directory where the m5 maps are saved
