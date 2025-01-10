@@ -1,0 +1,19 @@
+name: lbg-desc-forecast
+channels:
+  - conda-forge
+dependencies:
+  - astropy
+  - black
+  - flake8
+  - flake8-bugbear
+  - flake8-simplify
+  - isort
+  - jupyterlab
+  - matplotlib
+  - mypy
+  - namaster
+  - numpy
+  - pip
+  - pyccl
+  - python=3.11
+  - rubin-sim
