@@ -56,8 +56,10 @@ def run_metric_bundles():
         for band in "ugrizy":
             # Constraint on exposures
             constraint = (
-                f"filter='{band}' and note not like 'DD%' and night <= {days} "
-                "and note not like 'twilight_near_sun' "
+                f"filter='{band}' and "
+                "scheduler_note not like 'DD%' and "
+                f"night <= {days} and "
+                "scheduler_note not like 'twilight_near_sun' "
             )
 
             # Add the metric bundle
@@ -82,7 +84,7 @@ def rename_files():
     for file in files:
         try:
             # Get the number of years for this file
-            base, days, _ = file.stem.split("_and_note_not_like")
+            base, days, _ = file.stem.split("_and_scheduler_note_not_like")
             days = float(".".join(days.split("_")[-2:]))
             years = int(days / 365.25)
 
