@@ -18,6 +18,9 @@ def create_lbg_tracer(
     band: str,
     mag_cut: float,
     m5_det: float,
+    dz: float = 0.0,
+    f_interlopers: float = 0.0,
+    mag_bias: float | None = None,
     cosmology: ccl.Cosmology | None = None,
 ) -> ccl.tracers.NzTracer:
     """Create number density tracer for LBG dropouts.
@@ -28,8 +31,19 @@ def create_lbg_tracer(
         Name of dropout band
     mag_cut : floa
         Magnitude cut in the detection band for LBGs
-    m5_det : float or array or None, default=None
-        5-sigma depth in the detection band. If None, mag_cut is used
+    m5_det : float or array or None
+        5-sigma depth in the detection band. If None, mag_cut is used.
+    dz : float, optional
+        Amount by which to shift the distribution of true LBGs (i.e.
+        interlopers are not shifted). This corresponds to the DES delta z
+        nuisance parameters. Default is zero.
+    f_interlopers : float, optional
+        Fraction of low-redshift interlopers. Same p(z) shape is used
+        for interlopers, but shifted to the redshift corresponding to
+        Lyman-/Balmer-break confusion. Default is zero.
+    mag_bias : float or None, optional
+        Magnification bias alpha value. If None, value is pulled from the
+        lbg_tools TomographicBin. Default is None.
     cosmology : ccl.Cosmology
         CCL cosmology object. If None, vanilla LCDM is used. Default is None.
 
@@ -39,12 +53,29 @@ def create_lbg_tracer(
         Number counts tracer for LBGs
     """
     # Create the tomographic bin
-    tb = TomographicBin(band=band, mag_cut=mag_cut, m5_det=m5_det)
+    tb = TomographicBin(
+        band=band,
+        mag_cut=mag_cut,
+        m5_det=m5_det,
+        dz=dz,
+        f_interlopers=f_interlopers,
+    )
 
     # Sample p(z) and bias on dense grid
-    z = np.linspace(1, 8, 1000)
+    z = np.arange(0, 8.01, 0.01)
     pz = np.interp(z, *tb.pz)
     b = np.interp(z, *tb.g_bias)
+
+    # Determine magnification bias
+    # alpha = 2.5 * d log10(N) / d mag
+    # s = alpha / 2.5
+    z_interlopers, z_lbg = tb._get_z_grids()
+    alpha = tb.mag_bias if mag_bias is None else mag_bias
+    alpha = np.array([0.0] * len(z_interlopers) + [alpha] * len(z_lbg))
+    sz = alpha / 2.5
+    sz = np.interp(  # Resample on denser grid
+        z, np.concatenate((z_interlopers, z_lbg)), sz
+    )
 
     # Prep the cosmology object
     if cosmology is None:
@@ -56,6 +87,7 @@ def create_lbg_tracer(
         has_rsd=False,
         dndz=(z, pz),
         bias=(z, b),
+        mag_bias=(z, sz),
     )
 
     return tracer
@@ -65,6 +97,9 @@ def calc_lbg_spectra(
     band: str,
     mag_cut: float,
     m5_det: float,
+    dz: float = 0.0,
+    f_interlopers: float = 0.0,
+    mag_bias: float | None = None,
     cosmology: ccl.Cosmology | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Calculate angular cross-spectra of LBGs and CMB Lensing.
@@ -77,6 +112,17 @@ def calc_lbg_spectra(
         Magnitude cut in the detection band for LBGs
     m5_det : float or array or None, default=None
         5-sigma depth in the detection band. If None, mag_cut is used
+    dz : float, optional
+        Amount by which to shift the distribution of true LBGs (i.e.
+        interlopers are not shifted). This corresponds to the DES delta z
+        nuisance parameters. Default is zero.
+    f_interlopers : float, optional
+        Fraction of low-redshift interlopers. Same p(z) shape is used
+        for interlopers, but shifted to the redshift corresponding to
+        Lyman-/Balmer-break confusion. Default is zero.
+    mag_bias : float or None, optional
+        Magnification bias alpha value. If None, value is pulled from the
+        lbg_tools TomographicBin. Default is None.
     cosmology : ccl.Cosmology
         CCL cosmology object. If None, vanilla LCDM is used.
 
@@ -100,6 +146,9 @@ def calc_lbg_spectra(
         band=band,
         mag_cut=mag_cut,
         m5_det=m5_det,
+        dz=dz,
+        f_interlopers=f_interlopers,
+        mag_bias=mag_bias,
         cosmology=cosmology,
     )
     cmb_lensing = ccl.CMBLensingTracer(cosmology, z_source=1100)
@@ -112,7 +161,7 @@ def calc_lbg_spectra(
     return ell, Cgg, Ckg, Ckk
 
 
-def _calc_snr_from_products(
+def calc_snr_from_products(
     Cgg: np.ndarray,
     Ckg: np.ndarray,
     Ckk: np.ndarray,
