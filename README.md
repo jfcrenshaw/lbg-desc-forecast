@@ -26,3 +26,7 @@ wget -P data/ https://s3df.slac.stanford.edu/data/rubin/sim-data/sims_featureSch
 3. Calculate 5-sigma depths by running `python bin/calc_m5.py`.
 
 4. Generate cached values for interpolating across 5-sigma depth maps: `python bin/create_caches.py`
+
+5. Run forecasts using the script `bin/run_forecasts.py`
+
+The notebooks in the `notebooks/` directory plot the results and can be run in any order.

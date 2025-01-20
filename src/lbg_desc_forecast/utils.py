@@ -1,5 +1,7 @@
 """Simple utility functions"""
 
+import contextlib
+import os
 from pathlib import Path
 
 import healpy as hp
@@ -7,6 +9,7 @@ import numpy as np
 import rubin_sim.maf as maf
 
 data_dir = Path(__file__).parents[2] / "data"
+fig_dir = Path(__file__).parents[2] / "figures"
 
 
 def get_lensing_noise() -> tuple[np.ndarray, np.ndarray]:
@@ -46,9 +49,10 @@ def load_m5_map(band: str, year: int) -> np.ma.MaskedArray:
         Masked array of 5-sigma depths
     """
     try:
-        map = maf.MetricBundle.load(
-            data_dir / "m5_maps" / f"baseline_v4_0_{year}yrs_ExgalM5_{band}.npz"
-        )
+        with open(os.devnull, "w") as f, contextlib.redirect_stdout(f):
+            map = maf.MetricBundle.load(
+                data_dir / "m5_maps" / f"baseline_v4_0_{year}yrs_ExgalM5_{band}.npz"
+            )
         return map.metric_values
     except OSError:
         raise ValueError(

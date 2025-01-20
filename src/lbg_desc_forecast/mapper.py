@@ -1,15 +1,20 @@
-"""Functions to perform operations with depth maps."""
+"""Class that unifies an LBG tomographic bin, tracer, and depth maps."""
 
-import healpy as hp
+from copy import deepcopy
+
 import numpy as np
 import pyccl as ccl
 import pymaster as nmt
-from scipy.optimize import minimize_scalar
+from lbg_tools import TomographicBin
 
-from .cosmo_tools import DEG2_PER_STER, calc_lbg_spectra, calc_snr_from_products
 from .density_interpolator import interpolate_number_density
 from .utils import get_lensing_noise, load_m5_map
 
+# Constants for sky area
+A_SKY = 41_253  # deg^2
+DEG2_PER_STER = A_SKY / (4 * 3.14159)
+
+# Detection bands for each dropout sample
 _det_bands = {
     "u": "r",
     "g": "i",
@@ -27,6 +32,8 @@ class Mapper:
         contamination: float | None = 0.1,
         dz: float = 0.0,
         f_interlopers: float = 0.0,
+        g_bias: float | None = None,
+        g_bias_inter: float | None = None,
         mag_bias: float | None = None,
         dropout: float = 1,
         snr_min: float = 3,
@@ -54,6 +61,12 @@ class Mapper:
             Fraction of low-redshift interlopers. Same p(z) shape is used
             for interlopers, but shifted to the redshift corresponding to
             Lyman-/Balmer-break confusion. Default is zero.
+        g_bias : float or None, optional
+            Galaxy bias for LBG population. If None, value is pulled from the
+            lbg_tools TomographicBin. Default is None.
+        g_bias_inter : float or None, optional
+            Galaxy bias for the interloper population. If None, value is pulled from the
+            lbg_tools TomographicBin. Default is None.
         mag_bias : float or None, optional
             Magnification bias alpha value. If None, value is pulled from the
             lbg_tools TomographicBin. Default is None.
@@ -67,11 +80,13 @@ class Mapper:
         self.drop_band = band
         self.det_band = _det_bands[band]
         self.year = year
-        self.mag_cut = mag_cut
-        self.m5_min = m5_min
+        self.mag_cut = mag_cut  # type: ignore
+        self.m5_min = m5_min  # type: ignore
         self.contamination = contamination
         self.dz = dz
         self.f_interlopers = f_interlopers
+        self.g_bias = g_bias
+        self.g_bias_inter = g_bias_inter
         self.mag_bias = mag_bias
         self.dropout = dropout
         self.snr_min = snr_min
@@ -80,75 +95,45 @@ class Mapper:
         self.drop_map = load_m5_map(self.drop_band, self.year)
         self.det_map = load_m5_map(self.det_band, self.year)
 
-    def _get_cuts(
-        self, mag_cut: float | None, m5_min: float | None
-    ) -> tuple[float, float]:
-        """Handle logic associated with cuts values == None.
+    def copy(self) -> "Mapper":
+        """Return copy of self."""
+        return deepcopy(self)
 
-        Parameters
-        ----------
-        mag_cut : float, optional
-            Magnitude cut on LBGs in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
-        m5_min : float, optional
-            The minimum depth in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
+    @property
+    def mag_cut(self) -> float:
+        """Magnitude cut on LBGs in the detection band."""
+        if self._mag_cut is None:
+            raise ValueError("mag_cut has not been set.")
+        return self._mag_cut
 
-        Returns
-        -------
-        float
-            mag_cut
-        float
-            m5_min
-        """
-        _mag_cut, _m5_min = None, None
+    @mag_cut.setter
+    def mag_cut(self, value: float | None) -> None:
+        """Set magnitude cut on LBGs in the detection band."""
+        self._mag_cut = value
 
-        if mag_cut is not None:
-            _mag_cut = mag_cut
-        elif self.mag_cut is not None:
-            _mag_cut = self.mag_cut
-        else:
-            raise ValueError(
-                "mag_cut not set at class instantiation, so it must be provided."
-            )
+    @property
+    def m5_min(self) -> float:
+        """The minimum depth in the detection band."""
+        if self._m5_min is None:
+            raise ValueError("m5_min has not been set.")
+        return self._m5_min
 
-        if m5_min is not None:
-            _m5_min = m5_min
-        elif self.m5_min is not None:
-            _m5_min = self.m5_min
-        else:
-            raise ValueError(
-                "m5_min not set at class instantiation, so it must be provided."
-            )
+    @m5_min.setter
+    def m5_min(self, value: float | None) -> None:
+        """Set the minimum depth in the detection band."""
+        self._m5_min = value
 
-        return _mag_cut, _m5_min
-
-    def construct_mask(
-        self,
-        mag_cut: float | None = None,
-        m5_min: float | None = None,
-    ) -> np.ndarray:
+    @property
+    def mask(self) -> np.ndarray:
         """Construct the mask based on the cuts.
-
-        Parameters
-        ----------
-        mag_cut : float, optional
-            Magnitude cut on LBGs in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
-        m5_min : float, optional
-            The minimum depth in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
 
         Returns
         -------
         np.array
             Mask of healpy map
         """
-        # Handle logic with cuts == None
-        mag_cut, m5_min = self._get_cuts(mag_cut, m5_min)
-
         # m5_min can't be brighter than mag_cut
-        m5_min = max(m5_min, mag_cut)
+        m5_min = max(self.m5_min, self.mag_cut)
 
         # Mask pixels that aren't sufficiently deep
         mask = self.det_map.mask
@@ -158,7 +143,7 @@ class Mapper:
         # We can't include pixels where the dropout depth isn't
         # sufficiently deeper than mag_cut
         # Cut with reference to dropout threshold
-        drop_min = mag_cut + self.dropout
+        drop_min = self.mag_cut + self.dropout
         # Convert this to a cut on 5-sigma depth
         m5_drop_min = drop_min - 2.5 * np.log10(5 / self.snr_min)
         # Mask pixels not deep enough in dropout band
@@ -166,21 +151,20 @@ class Mapper:
 
         return mask
 
-    def map_depth(
-        self,
-        mag_cut: float | None = None,
-        m5_min: float | None = None,
-    ) -> np.ma.MaskedArray:
-        """Create map of m5 depths.
+    @property
+    def f_sky(self) -> float:
+        """Calculate f_sky
 
-        Parameters
-        ----------
-        mag_cut : float, optional
-            Magnitude cut on LBGs in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
-        m5_min : float, optional
-            The minimum depth in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
+        Returns
+        -------
+        float
+            f_sky
+        """
+        return np.mean(~self.mask)
+
+    @property
+    def map_depth(self) -> np.ma.MaskedArray:
+        """Create map of m5 depths.
 
         Returns
         -------
@@ -190,7 +174,7 @@ class Mapper:
             Healpy map of dropout-band number density
         """
         # Construct the mask
-        mask = self.construct_mask(mag_cut=mag_cut, m5_min=m5_min)
+        mask = self.mask
 
         # Mask the dropout-band depth map
         drop = self.drop_map.copy()
@@ -204,109 +188,190 @@ class Mapper:
 
         return drop, det
 
-    def map_density(
-        self,
-        mag_cut: float | None = None,
-        m5_min: float | None = None,
-    ) -> np.ma.MaskedArray:
+    @property
+    def map_density(self) -> np.ma.MaskedArray:
         """Create map of LBG number density.
 
         Note this uses the interpolator, so is only accurate at the ~1% level.
-
-        Parameters
-        ----------
-        mag_cut : float, optional
-            Magnitude cut on LBGs in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
-        m5_min : float, optional
-            The minimum depth in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
 
         Returns
         -------
         np.ma.MaskedArray
             Healpy map of LBG number densities in deg^-2
         """
-        # Handle logic with cuts == None
-        mag_cut, m5_min = self._get_cuts(mag_cut, m5_min)
-
-        # Construct mask
-        mask = self.construct_mask(mag_cut=mag_cut, m5_min=m5_min)
-
-        # Calculate density map
-        density = interpolate_number_density(self.drop_band, mag_cut, self.det_map)
+        # Interpolate density map
+        density = interpolate_number_density(self.drop_band, self.mag_cut, self.det_map)
         density = np.ma.array(density, fill_value=np.nan)
-        density.mask = mask
+        density.mask = self.mask
 
         return density
 
-    def _measure_Cff(self, mag_cut: float, m5_min: float) -> np.ndarray:
-        """Measure auto-spectrum of non-uniformity.
-
-        Parameters
-        ----------
-        mag_cut : float
-            Magnitude cut on LBGs in the detection band
-        m5_min : float
-            The minimum depth in the detection band
+    @property
+    def shot_noise(self) -> float:
+        """Calculate sample shot noise spectrum.
 
         Returns
         -------
-        nmt.NmtBin
-            Pymaster bin object
-        np.ndarray
-            Auto-spectrum of non-uniformity
+        float
+            Shot noise
         """
-        # Create scalar field from fractional density fluctuations
-        density = self.map_density(mag_cut, m5_min)
-        f = (density - np.ma.mean(density)) / np.ma.mean(density)
-        field = nmt.NmtField((~f.mask).astype(int), f.data[None, :])
+        n = np.ma.mean(self.map_density)
+        Ngg = 1 / (n * DEG2_PER_STER)
+        return Ngg
 
-        # Calculate C_ell's from bandpasses
-        b = nmt.NmtBin.from_nside_linear(128, 1)
-        Cff = nmt.compute_full_master(field, field, b)[0]
+    @property
+    def tomographic_bin(self) -> TomographicBin:
+        """Return the lbg_tools tomographic bin."""
+        # Get median depth in detection band
+        # Create masked depth
+        drop_map, det_map = self.map_depth
+        m5_det = np.ma.median(det_map)
 
-        return b, Cff
+        return TomographicBin(
+            band=self.drop_band,
+            mag_cut=self.mag_cut,
+            m5_det=m5_det,
+            dz=self.dz,
+            f_interlopers=self.f_interlopers,
+        )
 
-    def calc_spectra(
+    def get_tracer(
         self,
-        mag_cut: float | None = None,
-        m5_min: float | None = None,
-        contamination: float | None = None,
-        dz: float | None = None,
-        f_interlopers: float | None = None,
-        mag_bias: float | None = None,
         cosmology: ccl.Cosmology | None = None,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Calculate power spectra associated with this tomographic bin.
+    ) -> ccl.NumberCountsTracer:
+        """Return the CCL tracer.
 
         Parameters
         ----------
-        mag_cut : float, optional
-            Magnitude cut on LBGs in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
-        m5_min : float, optional
-            The minimum depth in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
-        contamination : float or None, optional
-            Fraction of non-uniformity map that contaminates LSS signal.
-            If provided, overrides value set at class instantiation.
-            Default is None.
-        dz : float, optional
-            Amount by which to shift the distribution of true LBGs (i.e.
-            interlopers are not shifted). This corresponds to the DES delta z
-            nuisance parameters. If provided, overrides value set at class
-            instantiation. Default is None.
-        f_interlopers : float, optional
-            Fraction of low-redshift interlopers. Same p(z) shape is used
-            for interlopers, but shifted to the redshift corresponding to
-            Lyman-/Balmer-break confusion. If provided, overrides value set at
-            class instantiation. Default is None.
-        mag_bias : float or None, optional
-            Magnification bias alpha value. If provided, overrides
-            value set at class instantiation. Default is None.
         cosmology : ccl.Cosmology
-            CCL cosmology object. If None, vanilla LCDM is used. Default is None.
+            CCL cosmology object. If None, vanilla LCDM is used.
+
+
+        Returns
+        -------
+        ccl.NumberCountsTracer
+            Number counts tracer
+        """
+        # Get the tomographic bin
+        tb = self.tomographic_bin
+
+        # Sample p(z) and bias on dense grid
+        z = np.arange(0, 8.01, 0.01)
+        pz = np.interp(z, *tb.pz)
+
+        # Determine galaxy bias
+        z_interlopers, z_lbg = tb._get_z_grids()
+        if self.g_bias_inter is None:
+            b_interlopers = tb.g_bias[1][: z_interlopers.size]
+        else:
+            b_interlopers = [self.g_bias_inter] * len(z_interlopers)
+        if self.g_bias is None:
+            b_lbg = tb.g_bias[1][-z_lbg.size :]
+        else:
+            b_lbg = [self.g_bias] * len(z_lbg)
+        b = np.interp(  # Resample on denser grid
+            z,
+            np.concatenate((z_interlopers, z_lbg)),
+            np.concatenate((b_interlopers, b_lbg)),
+        )
+
+        # Determine magnification bias
+        # alpha = 2.5 * d log10(N) / d mag
+        # s = alpha / 2.5
+        z_interlopers, z_lbg = tb._get_z_grids()
+        alpha = tb.mag_bias if self.mag_bias is None else self.mag_bias
+        alpha = np.array([0.0] * len(z_interlopers) + [alpha] * len(z_lbg))
+        sz = alpha / 2.5
+        sz = np.interp(  # Resample on denser grid
+            z, np.concatenate((z_interlopers, z_lbg)), sz
+        )
+
+        # Prep the cosmology object
+        if cosmology is None:
+            cosmology = ccl.CosmologyVanillaLCDM()
+
+        # Create the tracer
+        tracer = ccl.NumberCountsTracer(
+            cosmology,
+            has_rsd=False,
+            dndz=(z, pz),
+            bias=(z, b),
+            mag_bias=(z, sz),
+        )
+
+        return tracer
+
+    def cross_Cff(self, mapper: "Mapper") -> tuple[np.ndarray, np.ndarray]:
+        """Measure cross-correlation of non-uniformity with another mapper.
+
+        Note this is *NOT* scaled by the contamination.
+
+        Parameters
+        ----------
+        mapper : Mapper
+            Other mapper, with which to measure cross-correlation of
+            non-uniformity.
+
+        Returns
+        -------
+        np.ndarray
+            Grid of ell values
+        np.ndarray
+            Cross-spectrum of non-uniformity
+        """
+        # Create scalar field from fractional density fluctuations
+        density = self.map_density
+        f = (density - np.ma.mean(density)) / np.ma.mean(density)
+        field = nmt.NmtField((~f.mask).astype(int), f.data[None, :])
+
+        # Same for other field
+        density2 = mapper.map_density
+        f2 = (density2 - np.ma.mean(density2)) / np.ma.mean(density2)
+        field2 = nmt.NmtField((~f2.mask).astype(int), f2.data[None, :])
+
+        # Calculate C_ell's from bandpasses
+        b = nmt.NmtBin.from_nside_linear(128, 1)
+        Cff = nmt.compute_full_master(field, field2, b)[0]
+
+        # Approximate with a running power-law
+        # Cff = a * ell ^ (m * ln(ell) + b)
+        # fit via ln(Cff) = m * ln(ell)^2 + b * ln(x) + ln(a)
+        ell_grid = b.get_effective_ells()
+        idx = np.where((Cff > 0))
+        x = np.log(ell_grid[idx])
+        y = np.log(Cff[idx])
+        params = np.polyfit(x, y, deg=2)
+
+        # Evaluate on our ell grid
+        ell, _ = get_lensing_noise()
+        Cff = np.exp(np.polyval(params, np.log(ell)))
+
+        return ell, Cff
+
+    def auto_Cff(self) -> tuple[np.ndarray, np.ndarray]:
+        """Measure auto-spectrum of non-uniformity.
+
+        Note this is *NOT* scaled by the contamination.
+
+        Returns
+        -------
+        np.ndarray
+            Grid of ell values
+        np.ndarray
+            Auto-spectrum of non-uniformity
+        """
+        return self.cross_Cff(mapper=self)
+
+    def calc_spectra(self, cosmology: ccl.Cosmology | None = None):
+        """Calculate auto-spectra
+
+        Note this actually includes Ckg as well. I just call these auto-spectra
+        because only one mapper is involved.
+
+        Parameters
+        ----------
+        cosmology : ccl.Cosmology
+            CCL cosmology object. If None, vanilla LCDM is used.
 
         Returns
         -------
@@ -319,115 +384,56 @@ class Mapper:
         np.ndarray
             Ckk -- CMB Lensing auto-spectrum
         np.ndarray
-            Cff -- non-uniformity auto-spectrum
+            Cff -- non-uniformity auto-spectrum (scaled by contamination)
         """
-        # Handle logic with overrides
-        mag_cut, m5_min = self._get_cuts(mag_cut, m5_min)
-        contamination = self.contamination if contamination is None else contamination
-        dz = self.dz if dz is None else dz
-        f_interlopers = self.f_interlopers if f_interlopers is None else f_interlopers
-        mag_bias = self.mag_bias if mag_bias is None else mag_bias
+        # Prep the cosmology object
+        if cosmology is None:
+            cosmology = ccl.CosmologyVanillaLCDM()
 
-        # Create masked depth
-        drop_map, det_map = self.map_depth(mag_cut, m5_min)
-
-        # Get median m5_det
-        m5_det = np.ma.median(det_map)
+        # Create tracers
+        lbg_tracer = self.get_tracer(cosmology)
+        cmb_lensing = ccl.CMBLensingTracer(cosmology, z_source=1100)
 
         # Calculate spectra
-        ell, Cgg, Ckg, Ckk = calc_lbg_spectra(
-            band=self.drop_band,
-            mag_cut=mag_cut,
-            m5_det=m5_det,
-            dz=dz,
-            f_interlopers=f_interlopers,
-            mag_bias=mag_bias,
-            cosmology=cosmology,
-        )
+        ell = get_lensing_noise()[0]
+        Cgg = ccl.angular_cl(cosmology, lbg_tracer, lbg_tracer, ell)
+        Ckg = ccl.angular_cl(cosmology, cmb_lensing, lbg_tracer, ell)
+        Ckk = ccl.angular_cl(cosmology, cmb_lensing, cmb_lensing, ell)
+        Cff = self.auto_Cff()[1] * np.sqrt(self.contamination)
 
-        # Calculate non-uniformity auto-spectrum
-        b, Cff = self._measure_Cff(mag_cut, m5_min)
-
-        # Approximate with a running power-law
-        # Cff = a * ell ^ (m * ln(ell) + b)
-        # fit via ln(Cff) = m * ln(ell)^2 + b * ln(x) + ln(a)
-        ell_grid = b.get_effective_ells()
-        idx = np.where((Cff > 0))
-        x = np.log(ell_grid[idx])
-        y = np.log(Cff[idx])
-        params = np.polyfit(x, y, deg=2)
-
-        # Evaluate on our ell grid
-        Cff = np.exp(np.polyval(params, np.log(ell)))
-
-        # Scale by contamination fraction
-        Cff *= np.sqrt(contamination)
-
-        # Return all spectra
         return ell, Cgg, Ckg, Ckk, Cff
 
-    def get_shot_noise(
-        self,
-        mag_cut: float | None = None,
-        m5_min: float | None = None,
-    ) -> float:
-        """Calculate the sample shot noise.
+    def cross_spectrum(self, mapper: "Mapper", cosmology: ccl.Cosmology | None = None):
+        """Calculate cross-spectra
 
         Parameters
         ----------
-        mag_cut : float, optional
-            Magnitude cut on LBGs in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
-        m5_min : float, optional
-            The minimum depth in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
+        mapper : Mapper
+            Other mapper, with which to calculate cross-spectra.
+        cosmology : ccl.Cosmology
+            CCL cosmology object. If None, vanilla LCDM is used.
 
         Returns
         -------
-        float
-            Shot noise
         """
-        n = np.ma.mean(self.map_density(mag_cut, m5_min))
-        Ngg = 1 / (n * DEG2_PER_STER)
-        return Ngg
+        # Create the two tracers
+        tracer0 = self.get_tracer(cosmology)
+        tracer1 = mapper.get_tracer(cosmology)
+
+        # Calculate spectra
+        ell = get_lensing_noise()[0]
+        Cgg_cross = ccl.angular_cl(cosmology, tracer0, tracer1, ell)
+
+        return Cgg_cross
 
     def calc_lss_snr(
         self,
-        mag_cut: float | None = None,
-        m5_min: float | None = None,
-        contamination: float | None = None,
-        dz: float | None = None,
-        f_interlopers: float | None = None,
-        mag_bias: float | None = None,
         cosmology: ccl.Cosmology | None = None,
     ) -> tuple[float, float, float]:
         """Calculate SNR of LSS signals
 
         Parameters
         ----------
-        mag_cut : float, optional
-            Magnitude cut on LBGs in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
-        m5_min : float, optional
-            The minimum depth in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
-        contamination : float or None, optional
-            Fraction of non-uniformity map that contaminates LSS signal.
-            If provided, overrides value set at class instantiation.
-            Default is None.
-        dz : float, optional
-            Amount by which to shift the distribution of true LBGs (i.e.
-            interlopers are not shifted). This corresponds to the DES delta z
-            nuisance parameters. If provided, overrides value set at class
-            instantiation. Default is None.
-        f_interlopers : float, optional
-            Fraction of low-redshift interlopers. Same p(z) shape is used
-            for interlopers, but shifted to the redshift corresponding to
-            Lyman-/Balmer-break confusion. If provided, overrides value set at
-            class instantiation. Default is None.
-        mag_bias : float or None, optional
-            Magnification bias alpha value. If provided, overrides
-            value set at class instantiation. Default is None.
         cosmology : ccl.Cosmology or None
             CCL cosmology object. If None, vanilla LCDM is used. Default is None.
 
@@ -441,290 +447,31 @@ class Mapper:
             SNR of CMB Lensing x-corr
         """
         # Create spectra
-        _, *spectra = self.calc_spectra(
-            mag_cut=mag_cut,
-            m5_min=m5_min,
-            contamination=contamination,
-            dz=dz,
-            f_interlopers=f_interlopers,
-            mag_bias=mag_bias,
-            cosmology=cosmology,
-        )
+        ell, Cgg, Ckg, Ckk, Cff = self.calc_spectra(cosmology)
+        Ngg = self.shot_noise + self.contamination * Cff
+        Nkk = get_lensing_noise()[1]
 
-        # Calculate shot noise
-        Ngg = self.get_shot_noise(mag_cut, m5_min)
-
-        # Calculate f_sky from the mask
-        f_sky = np.mean(~self.construct_mask(mag_cut, m5_min))
-
-        return calc_snr_from_products(*spectra, Ngg, f_sky)  # type: ignore
-
-    def optimize_cuts(
-        self,
-        contamination: float | None = 0.1,
-        dz: float | None = 0.0,
-        f_interlopers: float | None = 0.0,
-        mag_bias: float | None = 1.0,
-        metric: str = "tot",
-        cosmology: ccl.Cosmology | None = None,
-    ) -> tuple[float, float]:
-        """Optimize mag_cut and m5_min by maximizing SNR of LSS signal.
-
-        Parameters
-        ----------
-        contamination : float or None, optional
-            Fraction of non-uniformity map that contaminates LSS signal.
-            If provided, overrides value set at class instantiation.
-            Default is 0.1.
-        dz : float, optional
-            Amount by which to shift the distribution of true LBGs (i.e.
-            interlopers are not shifted). This corresponds to the DES delta z
-            nuisance parameters. If provided, overrides value set at class
-            instantiation. Default is zero.
-        f_interlopers : float, optional
-            Fraction of low-redshift interlopers. Same p(z) shape is used
-            for interlopers, but shifted to the redshift corresponding to
-            Lyman-/Balmer-break confusion. If provided, overrides value set at
-            class instantiation. Default is zero.
-        mag_bias : float or None, optional
-            Magnification bias alpha value. If provided, overrides
-            value set at class instantiation. Default is 1.0, which corresponds
-            to no magnification bias.
-        metric : str, optional
-            Which SNR to maximize. "tot" maximizes the total SNR, "gg" maximizes
-            the clustering signal, and "kg" maximizes the cross-correlation with
-            CMB lensing. Default is "tot"
-        cosmology : ccl.Cosmology or None
-            CCL cosmology object. If None, vanilla LCDM is used. Default is None.
-
-        Returns
-        -------
-        float
-            optimized mag_cut
-        float
-            optimized m5_min
-        """
-        # Determine the metric index
-        if metric == "tot":
-            idx = 0
-        elif metric == "gg":
-            idx = 1
-        elif metric == "kg":
-            idx = 2
-        else:
-            raise ValueError(f"Metric {metric} not supported.")
-
-        # Prep the cosmology object
-        if cosmology is None:
-            cosmology = ccl.CosmologyVanillaLCDM()
-
-        # First optimize mag_cut
-        drop_shift = -self.dropout + 2.5 * np.log10(5 / self.snr_min)
-        lower = max(23, np.ma.min(self.drop_map) + drop_shift)
-        upper = min(np.ma.max(self.det_map), np.ma.max(self.drop_map) + drop_shift)
-        res = minimize_scalar(
-            fun=lambda mag_cut: -self.calc_lss_snr(
-                mag_cut=mag_cut,
-                m5_min=mag_cut,
-                contamination=contamination,
-                dz=dz,
-                f_interlopers=f_interlopers,
-                mag_bias=mag_bias,
-                cosmology=cosmology,
-            )[idx],
-            bounds=(lower, upper),
-            options=dict(xatol=1e-3),
-        )
-        if not res.success:
-            raise RuntimeError("Optimizing mag_cut failed.")
-        if np.isclose(res.x, lower):
-            raise RuntimeError("mag_cut hit lower bound.")
-        if np.isclose(res.x, upper):
-            raise RuntimeError("mag_cut hit upper bound.")
-        mag_cut = res.x
-
-        # Now optimize m5_min
-        lower = mag_cut
-        upper = np.ma.max(self.det_map)
-        res = minimize_scalar(
-            fun=lambda m5_min: -self.calc_lss_snr(
-                mag_cut=mag_cut,
-                m5_min=m5_min,
-                contamination=contamination,
-                dz=dz,
-                f_interlopers=f_interlopers,
-                mag_bias=mag_bias,
-                cosmology=cosmology,
-            )[idx],
-            bounds=(lower, upper),
-            options=dict(xatol=1e-3),
-        )
-        if not res.success:
-            raise RuntimeError("Optimizing m5_min failed.")
-        if np.isclose(res.x, upper):
-            raise RuntimeError("m5_min hit upper bound.")
-        m5_min = res.x
-
-        return mag_cut, m5_min
-
-    def get_forecast_products(
-        self,
-        ell_min: float,
-        ell_max: float,
-        ell_N: int,
-        mag_cut: float | None = None,
-        m5_min: float | None = None,
-        contamination: float | None = None,
-        dz: float | None = None,
-        f_interlopers: float | None = None,
-        mag_bias: float | None = None,
-        cosmology: ccl.Cosmology | None = None,
-    ) -> dict:
-        """Create dictionary containing all the products needed for Fisher forecasts.
-
-        Note the covariances returned in the dict contain the coupling estimated
-        by namaster.
-
-        Parameters
-        ----------
-        ell_min : float
-            Minimum ell value.
-        ell_max : float
-            Maximum ell value.
-        ell_N : int
-            Number of logarithmic ell bins.
-        mag_cut : float, optional
-            Magnitude cut on LBGs in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
-        m5_min : float, optional
-            The minimum depth in the detection band. If provided, overrides
-            value set at class instantiation. Default is None.
-        contamination : float or None, optional
-            Fraction of non-uniformity map that contaminates LSS signal.
-            If provided, overrides value set at class instantiation.
-            Default is None.
-        dz : float, optional
-            Amount by which to shift the distribution of true LBGs (i.e.
-            interlopers are not shifted). This corresponds to the DES delta z
-            nuisance parameters. If provided, overrides value set at class
-            instantiation. Default is None.
-        f_interlopers : float, optional
-            Fraction of low-redshift interlopers. Same p(z) shape is used
-            for interlopers, but shifted to the redshift corresponding to
-            Lyman-/Balmer-break confusion. If provided, overrides value set at
-            class instantiation. Default is None.
-        mag_bias : float or None, optional
-            Magnification bias alpha value. If provided, overrides
-            value set at class instantiation. Default is None.
-        cosmology : ccl.Cosmology or None
-            CCL cosmology object. If None, vanilla LCDM is used. Default is None.
-
-        Returns
-        -------
-        dict
-            ell: grid of effective ell values
-            Cgg: LBG auto-spectrum
-            Ckg: LBG x CMB lensing spectrum
-            Ckk: CMB lensing auto-spectrum
-            Cff: Non-uniformity auto-spectrum
-            Cov_gggg: Cov[Cgg, Cgg]
-            Cov_kggg: Cov[Ckg, Cgg]
-            Cov_kkgg: Cov[Ckk, Cgg]
-            Cov_kgkg: Cov[Ckg, Ckg]
-            Cov_kkkg: Cov[Ckk, Ckg]
-            Cov_kkkk: Cov[Ckk, Ckk]
-        """
-        # Get theory spectra
-        ell, Cgg, Ckg, Ckk, Cff = self.calc_spectra(
-            mag_cut=mag_cut,
-            m5_min=m5_min,
-            contamination=contamination,
-            dz=dz,
-            f_interlopers=f_interlopers,
-            mag_bias=mag_bias,
-            cosmology=cosmology,
-        )
-
-        # Get nside required to accommodate ell_max
-        nside = (ell_max + 1) / 3
-        nside = 2 ** np.ceil(np.log2(nside)).astype(int)
-
-        # Get mask and upscale resolution
-        mask = self.construct_mask(mag_cut, m5_min)
-        mask = hp.pixelfunc.ud_grade((~mask).astype(int), nside)
-
-        # Generate random field realizations
-        realized_fields = nmt.utils.synfast_spherical(
-            nside,
-            np.array([Cgg, Ckg, Ckk]),
-            [0, 0],
-        )
-        g_field = nmt.NmtField(
-            mask,
-            realized_fields[0, None],
-            lmax=ell_max,
-            lmax_mask=ell_max,
-        )
-        k_field = nmt.NmtField(
-            mask,
-            realized_fields[1, None],
-            lmax=ell_max,
-            lmax_mask=ell_max,
-        )
-
-        # Create logarithmic ell bins
-        edges = np.unique(np.geomspace(ell_min, ell_max + 1, ell_N + 1).astype(int))
-        b = nmt.NmtBin.from_edges(edges[:-1], edges[1:], is_Dell=False)
-
-        # Create workspaces for each spectrum
-        wgg = nmt.NmtWorkspace.from_fields(g_field, g_field, b)
-        wkg = nmt.NmtWorkspace.from_fields(k_field, g_field, b)
-        wkk = nmt.NmtWorkspace.from_fields(k_field, k_field, b)
-
-        # Add noise to spectra
-        Cgg_ = Cgg + self.get_shot_noise(mag_cut, m5_min)
-        Ckg_ = Ckg  # No correlated noise
-        Ckk_ = Ckk + get_lensing_noise()[1]
+        # Assemble signal vector
+        mu = np.concatenate((Cgg, Ckg)).reshape(-1, 1)
 
         # Calculate covariances
-        cw = nmt.NmtCovarianceWorkspace.from_fields(g_field, g_field, g_field, g_field)
-        spins = [0, 0, 0, 0]
-        Cov_gggg = nmt.gaussian_covariance(
-            cw, *spins, [Cgg_], [Cgg_], [Cgg_], [Cgg_], wgg, wb=wgg
-        )
-        Cov_kggg = nmt.gaussian_covariance(
-            cw, *spins, [Ckg_], [Ckg_], [Cgg_], [Cgg_], wkg, wb=wgg
-        )
-        Cov_kkgg = nmt.gaussian_covariance(
-            cw, *spins, [Ckg_], [Ckg_], [Ckg_], [Ckg_], wkk, wb=wkg
-        )
-        Cov_kgkg = nmt.gaussian_covariance(
-            cw, *spins, [Ckk_], [Ckg_], [Ckg_], [Cgg_], wkg, wb=wkg
-        )
-        Cov_kkkg = nmt.gaussian_covariance(
-            cw, *spins, [Ckk_], [Ckg_], [Ckk_], [Ckg_], wkk, wb=wkg
-        )
-        Cov_kkkk = nmt.gaussian_covariance(
-            cw, *spins, [Ckk_], [Ckk_], [Ckk_], [Ckk_], wkk, wb=wkk
+        norm = 1 / (2 * ell + 1) / self.f_sky
+        Cov_gggg = 2 * norm * (Cgg + Ngg) ** 2
+        Cov_ggkg = 2 * norm * Ckg * (Cgg + Ngg)
+        Cov_kgkg = norm * ((Ckk + Nkk) * (Cgg + Ngg) + Ckg**2)
+
+        # Inverse covariance matrix
+        det = Cov_gggg * Cov_kgkg - Cov_ggkg**2  # Determinant
+        Cov_inv = np.block(
+            [
+                [np.diag(Cov_kgkg / det), -np.diag(Cov_ggkg / det)],
+                [-np.diag(Cov_ggkg / det), np.diag(Cov_gggg / det)],
+            ]
         )
 
-        # Interpolate spectra onto new grid
-        Cgg = np.interp(b.get_effective_ells(), ell, Cgg)
-        Ckg = np.interp(b.get_effective_ells(), ell, Ckg)
-        Ckk = np.interp(b.get_effective_ells(), ell, Ckk)
-        Cff = np.interp(b.get_effective_ells(), ell, Cff)
+        # Calculate weighted SNRs
+        snr_tot = np.sqrt(mu.T @ Cov_inv @ mu)[0, 0]
+        snr_gg = np.sqrt(np.sum(Cgg**2 / Cov_gggg))
+        snr_kg = np.sqrt(np.sum(Ckg**2 / Cov_kgkg))
 
-        # Return everything in a dictionary
-        return dict(
-            ell=b.get_effective_ells(),
-            Cgg=Cgg,
-            Ckg=Ckg,
-            Ckk=Ckk,
-            Cff=Cff,
-            Cov_gggg=Cov_gggg,
-            Cov_kggg=Cov_kggg,
-            Cov_kkgg=Cov_kkgg,
-            Cov_kgkg=Cov_kgkg,
-            Cov_kkkg=Cov_kkkg,
-            Cov_kkkk=Cov_kkkk,
-        )
+        return snr_tot, snr_gg, snr_kg
