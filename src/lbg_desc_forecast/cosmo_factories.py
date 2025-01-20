@@ -70,7 +70,11 @@ class MainCosmology(CosmoFactory):
             sigma_0=params.pop("sigma_0"),
         )
 
-        return ccl.Cosmology(**params)
+        return ccl.Cosmology(
+            **params,
+            mass_split="single",
+            extra_parameters=dict(camb=dict(dark_energy_model="ppf")),
+        )
 
 
 @dataclass
