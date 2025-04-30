@@ -207,7 +207,7 @@ class FisherMatrix:
         # Loop over keys
         for key in keys:
             # Find index for this key
-            idx = self.keys.index(key)
+            idx = fisher.keys.index(key)
 
             # Remove corresponding row/column in the covariance
             cov = np.delete(np.delete(cov, idx, axis=0), idx, axis=1)
@@ -328,6 +328,35 @@ class FisherMatrix:
         )
 
         return samples
+
+    def figure_of_merit(self, keys: list[str]) -> float:
+        """Calculate figure of merit for the pair of parameters.
+
+        Parameters
+        ----------
+        keys : list[str]
+            List of 2 parameters for which to create the contour
+
+        Returns
+        -------
+        float
+            Figure of merit
+        """
+        # Get sub-covariance
+        if len(keys) != 2:
+            raise ValueError("Must provide two keys.")
+        idx = [self.keys.index(key) for key in keys]
+        cov = self.covariance[np.ix_(idx, idx)]
+
+        # Eigen-decomposition to enable rotation
+        val, rot = np.linalg.eig(cov)
+
+        # Scale by ... TODO fix this comment
+        q = 2 * norm.cdf(1) - 1
+        r2 = chi2.ppf(q, 2)
+        val = np.sqrt(val * r2)
+
+        return 1 / np.prod(val)
 
 
 class Forecaster:
@@ -800,21 +829,21 @@ class Forecaster:
                 "You must first run self.create_cov()."
             )
 
-        # Create empty fisher matrix
+        # Calculate derivative of the signal with respect to each parameter
         keys = self.keys
-        fisher = np.zeros((len(keys), len(keys)))
+        dsig = []
+        for i, key in enumerate(keys):
+            dsig.append(
+                (self.create_signal(key, +1) - self.create_signal(key, -1))
+                / (2 * self.dparams[i])
+            )
 
         # Loop over parameter pairs and calculate fisher entry
+        fisher = np.zeros((len(keys), len(keys)))
         for i in range(len(keys)):
             for j in range(i, len(keys)):
-                dmu_i = (
-                    self.create_signal(keys[i], +1) - self.create_signal(keys[i], -1)
-                ) / (2 * self.dparams[i])
-                dmu_j = (
-                    self.create_signal(keys[j], +1) - self.create_signal(keys[j], -1)
-                ) / (2 * self.dparams[j])
                 fisher[i, j] = np.dot(
-                    dmu_i, np.dot(self.cov_inv, dmu_j.reshape(-1, 1))
+                    dsig[i], np.dot(self.cov_inv, dsig[j].reshape(-1, 1))
                 )[0]
 
         # Make symmetric

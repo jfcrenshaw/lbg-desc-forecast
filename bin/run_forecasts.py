@@ -18,11 +18,13 @@ fisher_dir.mkdir(parents=True, exist_ok=True)
 forecaster.create_fisher_matrix()
 forecaster.fisher_matrix.save(fisher_dir / "y10_main.fisher_matrix.npz")
 
-"""# Year 1 fiducial forecast
+"""
+# Year 1 fiducial forecast
 forecaster = Forecaster(get_lbg_mappers(1), MainCosmology())
 forecaster.create_cov()
 forecaster.create_fisher_matrix()
-forecaster.fisher_matrix.save(fisher_dir / "y1_main.fisher_matrix.npz")"""
+forecaster.fisher_matrix.save(fisher_dir / "y1_main.fisher_matrix.npz")
+"""
 
 # Y10 with clustering only
 forecaster = Forecaster(
