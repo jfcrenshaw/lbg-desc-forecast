@@ -175,6 +175,9 @@ def load_lbg_forecast(
     lbg = lbg.fix("m_nu")
 
     # Set prior on nuisance parameters
+    # - Interloper fraction priors are just vibes
+    # - Interloper bias priors are described in default_lbg
+    # - Mag bias are faint-end slope uncertainties from GOLDRUSH IV (Table 6)
     if set_prior:
         lbg.set_prior(
             u_dz=0.004 if year == 10 else np.inf,
