@@ -538,6 +538,7 @@ class Forecaster:
         self,
         param_to_step: str | None = None,
         sign: int = +1,
+        add_noise: bool = True,
     ) -> np.ndarray:
         """Create signal vector.
 
@@ -554,6 +555,9 @@ class Forecaster:
             Name of parameter to increment. Default is None.
         sign : int, optional
             Sign of the increment. Can be +/- 1. Default is +1.
+        add_noise : bool, optional
+            Whether to add the noise vectors to the signal vector.
+            This is useful for forecasting. Default is True.
 
         Returns
         -------
@@ -571,9 +575,10 @@ class Forecaster:
         for mapper in mappers:
             # Get spectra
             ell, Cgg, Ckg, Ckk, Cff = mapper.calc_spectra(cosmo.cosmology)
-            Cgg += mapper.shot_noise
-            Cgg += mapper.contamination * Cff
-            Ckk += get_lensing_noise()[1]
+            if add_noise:
+                Cgg += mapper.shot_noise
+                Cgg += mapper.contamination * Cff
+                Ckk += get_lensing_noise()[1]
 
             # Bin the C_ells
             if self.clustering:
