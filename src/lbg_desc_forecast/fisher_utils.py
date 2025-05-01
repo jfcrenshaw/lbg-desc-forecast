@@ -142,29 +142,33 @@ def load_lbg_forecast(
     # Load the LBG forecast matrix
     if clean:
         if clustering and xcorr and lensing:
-            lbg = FisherMatrix.load(fisher_dir / "y10_clean.fisher_matrix.npz")
+            lbg = FisherMatrix.load(fisher_dir / f"y{year}_clean.fisher_matrix.npz")
         elif clustering and xcorr:
             lbg = FisherMatrix.load(
-                fisher_dir / "y10_clean_clustering+xcorr.fisher_matrix.npz"
+                fisher_dir / f"y{year}_clean_clustering+xcorr.fisher_matrix.npz"
             )
         elif xcorr:
-            lbg = FisherMatrix.load(fisher_dir / "y10_clean_xcorr.fisher_matrix.npz")
+            lbg = FisherMatrix.load(
+                fisher_dir / f"y{year}_clean_xcorr.fisher_matrix.npz"
+            )
         else:
             lbg = FisherMatrix.load(
-                fisher_dir / "y10_clean_clustering.fisher_matrix.npz"
+                fisher_dir / f"y{year}_clean_clustering.fisher_matrix.npz"
             )
     else:
         if clustering and xcorr and lensing:
-            lbg = FisherMatrix.load(fisher_dir / "y10_fiducial.fisher_matrix.npz")
+            lbg = FisherMatrix.load(fisher_dir / f"y{year}_fiducial.fisher_matrix.npz")
         elif clustering and xcorr:
             lbg = FisherMatrix.load(
-                fisher_dir / "y10_fiducial_clustering+xcorr.fisher_matrix.npz"
+                fisher_dir / f"y{year}_fiducial_clustering+xcorr.fisher_matrix.npz"
             )
         elif xcorr:
-            lbg = FisherMatrix.load(fisher_dir / "y10_fiducial_xcorr.fisher_matrix.npz")
+            lbg = FisherMatrix.load(
+                fisher_dir / f"y{year}_fiducial_xcorr.fisher_matrix.npz"
+            )
         else:
             lbg = FisherMatrix.load(
-                fisher_dir / "y10_fiducial_clustering.fisher_matrix.npz"
+                fisher_dir / f"y{year}_fiducial_clustering.fisher_matrix.npz"
             )
 
     # Fix neutrino mass for now
