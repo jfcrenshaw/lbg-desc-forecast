@@ -212,7 +212,7 @@ class FisherMatrix:
             # Remove corresponding row/column in the covariance
             cov = np.delete(np.delete(cov, idx, axis=0), idx, axis=1)
 
-            # Remove corresponding center and priro
+            # Remove corresponding center and prior
             fisher.center = np.delete(fisher.center, idx)
             fisher.priors = np.delete(fisher.priors, idx)
 
@@ -220,7 +220,15 @@ class FisherMatrix:
             del fisher.keys[idx]
 
         # Invert back to Fisher matrix
-        fisher.matrix = np.linalg.inv(cov)
+        matrix = np.linalg.inv(cov)
+
+        # Subtract priors from diagonal
+        # (this is because they were added in when creating the covariance
+        # matrix. If we want to keep them separate, we need to subtract them
+        # back out)
+        idx = np.arange(len(matrix))
+        matrix[idx, idx] -= 1 / fisher.priors**2
+        fisher.matrix = matrix
 
         return fisher
 
@@ -586,11 +594,12 @@ class Forecaster:
         np.ndarray,
         np.ndarray,
         np.ndarray,
-        np.ndarray,
         nmt.NmtField,
         nmt.NmtField,
     ]:
         """Create products required to calculate covariance.
+
+        Auto-correlation terms have noise already added.
 
         Parameters
         ----------
@@ -607,16 +616,15 @@ class Forecaster:
             Ckg -- cross-correlation between LBGs and CMB lensing
         np.ndarray
             Ckk -- CMB lensing auto-correlation
-        np.ndarray
-            Cff -- non-uniformity auto-correlation
         nmt.NmtField
             Galaxy tracer field
         nmt.NmtField
             CMB lensing tracer field
         """
-        # Get spectra and noise
+        # Get spectra
         ell, Cgg, Ckg, Ckk, Cff = mapper.calc_spectra(self.cosmo.cosmology)
         Cgg += mapper.shot_noise
+        Cgg += mapper.contamination * Cff
         Ckk += get_lensing_noise()[1]
 
         # Upscale mask
@@ -641,7 +649,7 @@ class Forecaster:
             lmax_mask=self.ell_max,
         )
 
-        return ell, Cgg, Ckg, Ckk, Cff, g_field, k_field
+        return ell, Cgg, Ckg, Ckk, g_field, k_field
 
     def create_cov(self) -> None:
         """Create full covariance matrix.
@@ -677,9 +685,7 @@ class Forecaster:
         # Blocks for clustering and cross-correlation for each LBG sample
         for i, mapper in enumerate(self.mappers):
             # Get spectra and noise
-            ell, Cgg, Ckg, Ckk, Cff, g_field, k_field = self._create_cov_products(
-                mapper
-            )
+            ell, Cgg, Ckg, Ckk, g_field, k_field = self._create_cov_products(mapper)
 
             # Create NaMaster workspaces
             cw = nmt.NmtCovarianceWorkspace.from_fields(
@@ -694,8 +700,6 @@ class Forecaster:
                 Cov_gggg = nmt.gaussian_covariance(
                     cw, *spins, [Cgg], [Cgg], [Cgg], [Cgg], wgg, wb=wgg
                 )
-                Cff_ = np.interp(self.bins.get_effective_ells(), ell, Cff)
-                Cov_gggg += np.diag(Cff_**2)
                 Cov[A * i][A * i] = Cov_gggg
 
             if self.clustering and self.xcorr:
@@ -742,15 +746,19 @@ class Forecaster:
                 mapper_j = self.mappers[j]
 
                 # Get products associated with auto-spectra
-                _, Cgg_i, Ckg_i, Ckk_i, Cff_i, g_field_i, k_field_i = (
+                _, Cgg_i, Ckg_i, Ckk_i, g_field_i, k_field_i = (
                     self._create_cov_products(mapper_i)
                 )
-                _, Cgg_j, Ckg_j, Ckk_j, Cff_j, g_field_j, k_field_j = (
+                _, Cgg_j, Ckg_j, Ckk_j, g_field_j, k_field_j = (
                     self._create_cov_products(mapper_j)
                 )
 
                 # Calculate cross-spectrum
-                Cgg_ij = mapper_i.cross_spectrum(mapper_j, self.cosmo.cosmology)
+                _, Cgg_ij, Cff_ij = mapper_i.cross_spectrum(
+                    mapper_j, self.cosmo.cosmology
+                )
+                contamination = np.sqrt(mapper_i.contamination * mapper_j.contamination)
+                Cgg_ij += contamination * Cff_ij
 
                 # Create workspaces
                 cw_ij = nmt.NmtCovarianceWorkspace.from_fields(

@@ -29,7 +29,7 @@ class Mapper:
         year: int,
         mag_cut: float | None = None,
         m5_min: float | None = None,
-        contamination: float | None = 0.1,
+        contamination: float = 0.1,
         dz: float = 0.0,
         f_interlopers: float = 0.0,
         g_bias: float | None = None,
@@ -335,7 +335,7 @@ class Mapper:
 
         # Approximate with a running power-law
         # Cff = a * ell ^ (m * ln(ell) + b)
-        # fit via ln(Cff) = m * ln(ell)^2 + b * ln(x) + ln(a)
+        # fit via ln(Cff) = m * ln(ell)^2 + b * ln(ell) + ln(a)
         ell_grid = b.get_effective_ells()
         idx = np.where((Cff > 0))
         x = np.log(ell_grid[idx])
@@ -399,7 +399,7 @@ class Mapper:
         Cgg = ccl.angular_cl(cosmology, lbg_tracer, lbg_tracer, ell)
         Ckg = ccl.angular_cl(cosmology, cmb_lensing, lbg_tracer, ell)
         Ckk = ccl.angular_cl(cosmology, cmb_lensing, cmb_lensing, ell)
-        Cff = self.auto_Cff()[1] * np.sqrt(self.contamination)
+        Cff = self.auto_Cff()[1]
 
         return ell, Cgg, Ckg, Ckk, Cff
 
@@ -423,8 +423,9 @@ class Mapper:
         # Calculate spectra
         ell = get_lensing_noise()[0]
         Cgg_cross = ccl.angular_cl(cosmology, tracer0, tracer1, ell)
+        _, Cff_cross = self.cross_Cff(mapper)
 
-        return Cgg_cross
+        return ell, Cgg_cross, Cff_cross
 
     def calc_lss_snr(
         self,

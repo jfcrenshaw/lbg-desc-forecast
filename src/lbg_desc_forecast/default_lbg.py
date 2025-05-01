@@ -56,6 +56,7 @@ def get_lbg_params(year: int, contamination: float) -> tuple[dict, dict, dict]:
                 year=10,
                 mag_cut=24.81,
                 m5_min=25.75,
+                contamination=contamination,
             )
 
             g_params = dict(
@@ -63,6 +64,7 @@ def get_lbg_params(year: int, contamination: float) -> tuple[dict, dict, dict]:
                 year=10,
                 mag_cut=25.90,
                 m5_min=25.96,
+                contamination=contamination,
             )
 
             r_params = dict(
@@ -70,6 +72,7 @@ def get_lbg_params(year: int, contamination: float) -> tuple[dict, dict, dict]:
                 year=10,
                 mag_cut=25.52,
                 m5_min=25.52,
+                contamination=contamination,
             )
         elif np.isclose(contamination, 0.0):
             # Parameters from cut optimization
@@ -78,6 +81,7 @@ def get_lbg_params(year: int, contamination: float) -> tuple[dict, dict, dict]:
                 year=10,
                 mag_cut=24.81,
                 m5_min=25.75,
+                contamination=contamination,
             )
 
             g_params = dict(
@@ -85,6 +89,7 @@ def get_lbg_params(year: int, contamination: float) -> tuple[dict, dict, dict]:
                 year=10,
                 mag_cut=25.90,
                 m5_min=25.91,
+                contamination=contamination,
             )
 
             r_params = dict(
@@ -92,6 +97,7 @@ def get_lbg_params(year: int, contamination: float) -> tuple[dict, dict, dict]:
                 year=10,
                 mag_cut=25.52,
                 m5_min=25.52,
+                contamination=contamination,
             )
         else:
             raise error

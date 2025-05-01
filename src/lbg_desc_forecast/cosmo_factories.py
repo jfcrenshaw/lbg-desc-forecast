@@ -6,19 +6,6 @@ from dataclasses import dataclass
 
 import pyccl as ccl
 
-default_cosmo_params = dict(
-    Omega_M=0.3111,
-    Omega_b=0.02242 / 0.6766**2,
-    h=0.6766,
-    n_s=0.9665,
-    sigma8=0.8102,
-    w0=-1,
-    wa=0,
-    m_nu=0.06,
-    mu_0=0,
-    sigma_0=0,
-)
-
 
 @dataclass
 class CosmoFactory(ABC):
@@ -27,10 +14,10 @@ class CosmoFactory(ABC):
     Sub-classes must define sigma8, As, or equivalent.
     """
 
-    Omega_M: float = 0.3111
-    Omega_b: float = 0.02242 / 0.6766**2
-    h: float = 0.6766
-    n_s: float = 0.9665
+    Omega_M: float = 0.3156
+    Omega_b: float = 0.0491685
+    h: float = 0.6727
+    n_s: float = 0.9645
 
     def copy(self) -> "CosmoFactory":
         """Return deep copy of self."""
@@ -55,23 +42,15 @@ class CosmoFactory(ABC):
 class MainCosmology(CosmoFactory):
     """Main factory for cosmology forecasts"""
 
-    sigma8: float = 0.8102
+    sigma8: float = 0.831
     w0: float = -1
     wa: float = 0
     m_nu: float = 0.06
-    mu_0: float = 0
-    sigma_0: float = 0
 
     @property
     def cosmology(self) -> ccl.Cosmology:
-        params = self._params_with_omega_c
-        params["mg_parametrization"] = ccl.modified_gravity.MuSigmaMG(
-            mu_0=params.pop("mu_0"),
-            sigma_0=params.pop("sigma_0"),
-        )
-
         return ccl.Cosmology(
-            **params,
+            **self._params_with_omega_c,
             mass_split="single",
             extra_parameters=dict(camb=dict(dark_energy_model="ppf")),
         )
