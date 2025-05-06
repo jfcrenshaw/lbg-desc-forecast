@@ -65,6 +65,7 @@ def load_m5_map(band: str, year: int) -> np.ma.MaskedArray:
 def plot_map(
     values: np.ma.MaskedArray,
     title: str | None = None,
+    cbar_label: str | None = None,
     n_dec: int = 2,
     symm_limits: bool = True,
     sub: int = 111,
@@ -77,6 +78,8 @@ def plot_map(
         Metric values
     title: str or None, default=None
         Title for map
+    cbar_label: str or None, default=None
+        Label for the color bar.
     n_dec: int, default=2
         Number of decimals to display in colorbar ticks
     symm_limits: bool, default=True
@@ -117,6 +120,7 @@ def plot_map(
         min=cbar_min,
         max=cbar_max,
         cbar_ticks=cbar_ticks,
+        unit=cbar_label,
         format=f"%.{n_dec}f",
         fontsize=fontsize,
         fig=1,

@@ -13,16 +13,19 @@ from lbg_desc_forecast import (
 # Directory in which to save results
 fisher_dir.mkdir(parents=True, exist_ok=True)
 
-# Year 1 fiducial forecast
+# Create and save 1-year fiducial signal covariance
 forecaster = Forecaster(get_lbg_mappers(1), MainCosmology())
 forecaster.create_cov()
+np.save(data_dir / "signal_covariance_y1.npy", forecaster.cov)
+
+# Year 1 fiducial forecast
 forecaster.create_fisher_matrix()
 forecaster.fisher_matrix.save(fisher_dir / "y1_fiducial.fisher_matrix.npz")
 
 # Create and save 10-year fiducial signal covariance
 forecaster = Forecaster(get_lbg_mappers(10), MainCosmology())
 forecaster.create_cov()
-np.save(data_dir / "signal_covariance.npy", forecaster.cov)
+np.save(data_dir / "signal_covariance_y10.npy", forecaster.cov)
 
 # Year 10 fiducial forecast
 forecaster.create_fisher_matrix()

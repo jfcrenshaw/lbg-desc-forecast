@@ -207,6 +207,31 @@ class Mapper:
         return density
 
     @property
+    def mean_density(self) -> float:
+        """Return the mean number density in deg^{-2}
+
+        Returns
+        -------
+        float
+            Mean LBG number density in deg^{-2}
+        """
+        return np.ma.mean(self.map_density)
+
+    @property
+    def map_relative_density(self) -> np.ma.MaskedArray:
+        """Create map of relative LBG number density fluctuations.
+
+        Returns
+        -------
+        np.ma.MaskedArray
+            Healpy map of relative LBG number density fluctuations
+        """
+        density = self.map_density
+        mean = np.ma.mean(density)
+        f = (density - mean) / mean
+        return f
+
+    @property
     def shot_noise(self) -> float:
         """Calculate sample shot noise spectrum.
 
@@ -233,11 +258,13 @@ class Mapper:
             m5_det=m5_det,
             dz=self.dz,
             f_interlopers=self.f_interlopers,
+            completeness_params=dict(validate_deep=False),
         )
 
     def get_tracer(
         self,
         cosmology: ccl.Cosmology | None = None,
+        include_mag_bias: bool = True,
     ) -> ccl.NumberCountsTracer:
         """Return the CCL tracer.
 
@@ -245,7 +272,11 @@ class Mapper:
         ----------
         cosmology : ccl.Cosmology
             CCL cosmology object. If None, vanilla LCDM is used.
-
+            Default is None.
+        include_mag_bias : bool, optional
+            Whether to include magnification bias. This is mainly included
+            to provide a very easy way to calculate the mag bias spectrum.
+            Default is True.
 
         Returns
         -------
@@ -296,12 +327,16 @@ class Mapper:
             has_rsd=False,
             dndz=(z, pz),
             bias=(z, b),
-            mag_bias=(z, sz),
+            mag_bias=(z, sz) if include_mag_bias else None,
         )
 
         return tracer
 
-    def cross_Cff(self, mapper: "Mapper") -> tuple[np.ndarray, np.ndarray]:
+    def cross_Cff(
+        self,
+        mapper: "Mapper",
+        raw: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Measure cross-correlation of non-uniformity with another mapper.
 
         Note this is *NOT* scaled by the contamination.
@@ -311,6 +346,9 @@ class Mapper:
         mapper : Mapper
             Other mapper, with which to measure cross-correlation of
             non-uniformity.
+        raw : bool, optional
+            Whether to return the raw spectrum, rather than the fit.
+            Default is False.
 
         Returns
         -------
@@ -320,38 +358,53 @@ class Mapper:
             Cross-spectrum of non-uniformity
         """
         # Create scalar field from fractional density fluctuations
-        density = self.map_density
-        f = (density - np.ma.mean(density)) / np.ma.mean(density)
+        f = self.map_relative_density
         field = nmt.NmtField((~f.mask).astype(int), f.data[None, :])
 
         # Same for other field
-        density2 = mapper.map_density
-        f2 = (density2 - np.ma.mean(density2)) / np.ma.mean(density2)
+        f2 = mapper.map_relative_density
         field2 = nmt.NmtField((~f2.mask).astype(int), f2.data[None, :])
 
         # Calculate C_ell's from bandpasses
         b = nmt.NmtBin.from_nside_linear(128, 1)
+        ell_grid = b.get_effective_ells()
         Cff = nmt.compute_full_master(field, field2, b)[0]
 
-        # Approximate with a running power-law
-        # Cff = a * ell ^ (m * ln(ell) + b)
-        # fit via ln(Cff) = m * ln(ell)^2 + b * ln(ell) + ln(a)
-        ell_grid = b.get_effective_ells()
-        idx = np.where((Cff > 0))
-        x = np.log(ell_grid[idx])
-        y = np.log(Cff[idx])
-        params = np.polyfit(x, y, deg=2)
-
-        # Evaluate on our ell grid
+        # Get our ell grid
         ell, _ = get_lensing_noise()
-        Cff = np.exp(np.polyval(params, np.log(ell)))
+
+        if raw:
+            # Evaluate on our ell grid
+            Cff = np.interp(ell, ell_grid, Cff, left=0, right=0)
+
+        else:
+            # Approximate with a running power-law
+            # Cff = a * ell ^ (m * ln(ell) + b)
+            # fit via ln(Cff) = m * ln(ell)^2 + b * ln(ell) + ln(a)
+            idx = np.where((Cff > 0))
+            x = np.log(ell_grid[idx])
+            y = np.log(Cff[idx])
+            params = np.polyfit(x, y, deg=2)
+
+            # Evaluate on our ell grid
+            Cff = np.exp(np.polyval(params, np.log(ell)))
+
+            # Don't allow up-turn
+            idx = Cff.argmin()
+            Cff[idx:] = Cff[idx]
 
         return ell, Cff
 
-    def auto_Cff(self) -> tuple[np.ndarray, np.ndarray]:
+    def auto_Cff(self, raw: bool = False) -> tuple[np.ndarray, np.ndarray]:
         """Measure auto-spectrum of non-uniformity.
 
         Note this is *NOT* scaled by the contamination.
+
+        Parameters
+        ----------
+        raw : bool, optional
+            Whether to return the raw spectrum, rather than the fit.
+            Default is False.
 
         Returns
         -------
@@ -360,9 +413,13 @@ class Mapper:
         np.ndarray
             Auto-spectrum of non-uniformity
         """
-        return self.cross_Cff(mapper=self)
+        return self.cross_Cff(mapper=self, raw=raw)
 
-    def calc_spectra(self, cosmology: ccl.Cosmology | None = None):
+    def calc_spectra(
+        self,
+        cosmology: ccl.Cosmology | None = None,
+        Cff_raw: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Calculate auto-spectra
 
         Note this actually includes Ckg as well. I just call these auto-spectra
@@ -372,6 +429,9 @@ class Mapper:
         ----------
         cosmology : ccl.Cosmology
             CCL cosmology object. If None, vanilla LCDM is used.
+        Cff_raw : bool, optional
+            Whether to return the raw non-uniformity spectrum, rather than
+            the fit. Default is False.
 
         Returns
         -------
@@ -399,11 +459,15 @@ class Mapper:
         Cgg = ccl.angular_cl(cosmology, lbg_tracer, lbg_tracer, ell)
         Ckg = ccl.angular_cl(cosmology, cmb_lensing, lbg_tracer, ell)
         Ckk = ccl.angular_cl(cosmology, cmb_lensing, cmb_lensing, ell)
-        Cff = self.auto_Cff()[1]
+        Cff = self.auto_Cff(raw=Cff_raw)[1]
 
         return ell, Cgg, Ckg, Ckk, Cff
 
-    def cross_spectrum(self, mapper: "Mapper", cosmology: ccl.Cosmology | None = None):
+    def cross_spectrum(
+        self,
+        mapper: "Mapper",
+        cosmology: ccl.Cosmology | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Calculate cross-spectra
 
         Parameters
@@ -412,6 +476,7 @@ class Mapper:
             Other mapper, with which to calculate cross-spectra.
         cosmology : ccl.Cosmology
             CCL cosmology object. If None, vanilla LCDM is used.
+            Default is None.
 
         Returns
         -------
@@ -427,14 +492,55 @@ class Mapper:
 
         return ell, Cgg_cross, Cff_cross
 
+    def auto_mag_bias(
+        self,
+        cosmology: ccl.Cosmology | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Calculate the magnification bias auto spectrum.
+
+        Parameters
+        ----------
+        cosmology : ccl.Cosmology
+            CCL cosmology object. If None, vanilla LCDM is used.
+            Default is None.
+
+        Returns
+        -------
+        np.ndarray
+            Array of ell values
+        np.ndarray
+            The magnification bias auto-spectrum
+        """
+        # Prep the cosmology object
+        if cosmology is None:
+            cosmology = ccl.CosmologyVanillaLCDM()
+
+        # Get tracers with and without mag bias
+        tracer = self.get_tracer(cosmology)
+        tracer_no_mag = self.get_tracer(cosmology, include_mag_bias=False)
+
+        # Calculate clustering spectrum for each
+        ell = get_lensing_noise()[0]
+        Cgg = ccl.angular_cl(cosmology, tracer, tracer, ell)
+        Cgg_no_mag = ccl.angular_cl(cosmology, tracer_no_mag, tracer_no_mag, ell)
+
+        # Return the difference
+        return ell, Cgg - Cgg_no_mag
+
     def calc_lss_snr(
         self,
+        ell_min: float = 50,
+        ell_max: float = 2000,
         cosmology: ccl.Cosmology | None = None,
     ) -> tuple[float, float, float]:
         """Calculate SNR of LSS signals
 
         Parameters
         ----------
+        ell_min : float
+            Minimum ell value. Default is 50.
+        ell_max : float
+            Minimum ell value. Default is 2000.
         cosmology : ccl.Cosmology or None
             CCL cosmology object. If None, vanilla LCDM is used. Default is None.
 
@@ -451,6 +557,15 @@ class Mapper:
         ell, Cgg, Ckg, Ckk, Cff = self.calc_spectra(cosmology)
         Ngg = self.shot_noise + self.contamination * Cff
         Nkk = get_lensing_noise()[1]
+
+        # Cut to desired ell range
+        idx = np.where((ell >= ell_min) & (ell <= ell_max))
+        ell = ell[idx]
+        Cgg = Cgg[idx]
+        Ckg = Ckg[idx]
+        Ckk = Ckk[idx]
+        Ngg = Ngg[idx]
+        Nkk = Nkk[idx]
 
         # Assemble signal vector
         mu = np.concatenate((Cgg, Ckg)).reshape(-1, 1)
