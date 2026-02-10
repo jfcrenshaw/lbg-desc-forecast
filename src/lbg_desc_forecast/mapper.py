@@ -459,7 +459,11 @@ class Mapper:
         Cgg = ccl.angular_cl(cosmology, lbg_tracer, lbg_tracer, ell)
         Ckg = ccl.angular_cl(cosmology, cmb_lensing, lbg_tracer, ell)
         Ckk = ccl.angular_cl(cosmology, cmb_lensing, cmb_lensing, ell)
-        Cff = self.auto_Cff(raw=Cff_raw)[1]
+        Cff = (
+            np.zeros_like(ell)
+            if np.isclose(self.contamination, 0)
+            else self.auto_Cff(raw=Cff_raw)[1]
+        )
 
         return ell, Cgg, Ckg, Ckk, Cff
 
@@ -488,7 +492,10 @@ class Mapper:
         # Calculate spectra
         ell = get_lensing_noise()[0]
         Cgg_cross = ccl.angular_cl(cosmology, tracer0, tracer1, ell)
-        _, Cff_cross = self.cross_Cff(mapper)
+        if self.contamination > 0:
+            _, Cff_cross = self.cross_Cff(mapper)
+        else:
+            Cff_cross = np.zeros_like(ell)
 
         return ell, Cgg_cross, Cff_cross
 

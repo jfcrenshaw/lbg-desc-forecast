@@ -382,6 +382,7 @@ class Forecaster:
         lensing: bool = True,
         step_frac: float = 0.05,
         step_min: float = 0.01,
+        f_sky: float | None = None,
     ) -> None:
         """Create forecaster.
 
@@ -413,6 +414,9 @@ class Forecaster:
         step_min : float, optional
             Minimum value by which to step each parameter. Default is 0.01.
             Size by which to step each parameter. Default is 0.01.
+        f_sky : float or None, optional
+            Fraction of the sky covered by the survey. If None, this is
+            calculated from the mapper masks. Default is None.
         """
         # Save params
         self.mappers = mappers
@@ -424,6 +428,7 @@ class Forecaster:
         self.clustering = clustering
         self.xcorr = xcorr
         self.lensing = lensing
+        self.f_sky = f_sky
 
         self.step_frac = step_frac
         self.step_min = step_min
@@ -700,40 +705,46 @@ class Forecaster:
             wkg = nmt.NmtWorkspace.from_fields(k_field, g_field, self.bins)
             wkk = nmt.NmtWorkspace.from_fields(k_field, k_field, self.bins)
 
+            # Determine f_sky rescaling factor
+            if self.f_sky is None:
+                f_sky_factor = 1
+            else:
+                f_sky_factor = mapper.f_sky / self.f_sky
+
             # First we will handle correlations within the same redshift bin
             if self.clustering:
                 Cov_gggg = nmt.gaussian_covariance(
                     cw, *spins, [Cgg], [Cgg], [Cgg], [Cgg], wgg, wb=wgg
                 )
-                Cov[A * i][A * i] = Cov_gggg
+                Cov[A * i][A * i] = Cov_gggg * f_sky_factor
 
             if self.clustering and self.xcorr:
                 Cov_kggg = nmt.gaussian_covariance(
                     cw, *spins, [Ckg], [Ckg], [Cgg], [Cgg], wkg, wb=wgg
                 )
-                Cov[A * i][A * i + B] = Cov_kggg
-                Cov[A * i + B][A * i] = Cov_kggg
+                Cov[A * i][A * i + B] = Cov_kggg * f_sky_factor
+                Cov[A * i + B][A * i] = Cov_kggg * f_sky_factor
 
             if self.xcorr:
                 Cov_kgkg = nmt.gaussian_covariance(
                     cw, *spins, [Ckk], [Ckg], [Ckg], [Cgg], wkg, wb=wkg
                 )
-                Cov[A * i + B][A * i + B] = Cov_kgkg
+                Cov[A * i + B][A * i + B] = Cov_kgkg * f_sky_factor
 
             if self.lensing:
                 if self.clustering:
                     Cov_kkgg = nmt.gaussian_covariance(
                         cw, *spins, [Ckg], [Ckg], [Ckg], [Ckg], wkk, wb=wkg
                     )
-                    Cov[-1][A * i] = Cov_kkgg
-                    Cov[A * i][-1] = Cov_kkgg
+                    Cov[-1][A * i] = Cov_kkgg * f_sky_factor
+                    Cov[A * i][-1] = Cov_kkgg * f_sky_factor
 
                 if self.xcorr:
                     Cov_kkkg = nmt.gaussian_covariance(
                         cw, *spins, [Ckk], [Ckg], [Ckk], [Ckg], wkk, wb=wkg
                     )
-                    Cov[-1][A * i + B] = Cov_kkkg
-                    Cov[A * i + B][-1] = Cov_kkkg
+                    Cov[-1][A * i + B] = Cov_kkkg * f_sky_factor
+                    Cov[A * i + B][-1] = Cov_kkkg * f_sky_factor
 
         # Now lensing autocorrelation
         if self.lensing:
@@ -741,7 +752,7 @@ class Forecaster:
             Cov_kkkk = nmt.gaussian_covariance(
                 cw, *spins, [Ckk], [Ckk], [Ckk], [Ckk], wkk, wb=wkk
             )
-            Cov[-1][-1] = Cov_kkkk
+            Cov[-1][-1] = Cov_kkkk * f_sky_factor
 
         # Finally, cross-correlations between different redshift bins
         for i in range(len(self.mappers)):
@@ -774,6 +785,12 @@ class Forecaster:
                 wgg_j = nmt.NmtWorkspace.from_fields(g_field_j, g_field_j, self.bins)
                 wkg_j = nmt.NmtWorkspace.from_fields(k_field_j, g_field_j, self.bins)
 
+                # Determine f_sky rescaling factor
+                if self.f_sky is None:
+                    f_sky_factor = 1
+                else:
+                    f_sky_factor = np.sqrt(mapper_i.f_sky * mapper_j.f_sky) / self.f_sky
+
                 if self.clustering:
                     Cov_gggg_ij = nmt.gaussian_covariance(
                         cw_ij,
@@ -786,9 +803,9 @@ class Forecaster:
                         wb=wgg_j,
                     )
                     # Upper triangle
-                    Cov[A * i][A * j] = Cov_gggg_ij
+                    Cov[A * i][A * j] = Cov_gggg_ij * f_sky_factor
                     # Lower triangle
-                    Cov[A * j][A * i] = Cov_gggg_ij
+                    Cov[A * j][A * i] = Cov_gggg_ij * f_sky_factor
 
                 if self.clustering and self.xcorr:
                     Cov_kggg_ij = nmt.gaussian_covariance(
@@ -802,11 +819,11 @@ class Forecaster:
                         wb=wgg_j,
                     )
                     # Upper triangle
-                    Cov[A * i][A * j + B] = Cov_kggg_ij
-                    Cov[A * i + B][A * j] = Cov_kggg_ij
+                    Cov[A * i][A * j + B] = Cov_kggg_ij * f_sky_factor
+                    Cov[A * i + B][A * j] = Cov_kggg_ij * f_sky_factor
                     # Lower triangle
-                    Cov[A * j + B][A * i] = Cov_kggg_ij
-                    Cov[A * j][A * i + B] = Cov_kggg_ij
+                    Cov[A * j + B][A * i] = Cov_kggg_ij * f_sky_factor
+                    Cov[A * j][A * i + B] = Cov_kggg_ij * f_sky_factor
 
                 if self.xcorr:
                     Cov_kgkg_ij = nmt.gaussian_covariance(
@@ -820,9 +837,9 @@ class Forecaster:
                         wb=wkg_j,
                     )
                     # Upper triangle
-                    Cov[A * i + B][A * j + B] = Cov_kgkg_ij
+                    Cov[A * i + B][A * j + B] = Cov_kgkg_ij * f_sky_factor
                     # Lower triangle
-                    Cov[A * j + B][A * i + B] = Cov_kgkg_ij
+                    Cov[A * j + B][A * i + B] = Cov_kgkg_ij * f_sky_factor
 
         # Assemble matrix from blocks
         Cov = np.block(Cov)

@@ -23,6 +23,23 @@ _lbg_cuts = {
             "r": {"mag_cut": 24.34, "m5_min": 24.34},
         },
     },
+    4: {  # These made just by scaling year 1 by 2.5 * log10(t^0.46)
+        0: {
+            "u": {"mag_cut": 24.37, "m5_min": 24.37},
+            "g": {"mag_cut": 25.45, "m5_min": 25.45},
+            "r": {"mag_cut": 25.03, "m5_min": 25.03},
+        },
+        0.1: {
+            "u": {"mag_cut": 24.37, "m5_min": 24.37},
+            "g": {"mag_cut": 25.43, "m5_min": 25.44},
+            "r": {"mag_cut": 25.03, "m5_min": 25.03},
+        },
+        1: {
+            "u": {"mag_cut": 24.27, "m5_min": 24.27},
+            "g": {"mag_cut": 25.27, "m5_min": 25.27},
+            "r": {"mag_cut": 25.03, "m5_min": 25.03},
+        },
+    },
     10: {
         0: {
             "u": {"mag_cut": 24.76, "m5_min": 24.85},
@@ -82,7 +99,7 @@ def get_lbg_params(year: int, contamination: float) -> tuple[dict, dict, dict]:
         Default param dict for r-dropouts
     """
     # Check parameters
-    if year not in [1, 10] or contamination not in [0, 0.1, 1]:
+    if year not in [1, 4, 10] or contamination not in [0, 0.1, 1]:
         raise ValueError(
             f"Default config not found for year {year} "
             f"and contamination {contamination}."
