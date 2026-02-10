@@ -31,7 +31,10 @@ class Mapper:
         m5_min: float | None = None,
         contamination: float = 0.1,
         dz: float = 0.0,
+        stretch: float = 1.0,
         f_interlopers: float = 0.0,
+        dz_interlopers: float = 0.0,
+        stretch_interlopers: float = 1.0,
         g_bias: float | None = None,
         g_bias_inter: float | None = None,
         mag_bias: float | None = None,
@@ -57,16 +60,26 @@ class Mapper:
             Amount by which to shift the distribution of true LBGs (i.e.
             interlopers are not shifted). This corresponds to the DES delta z
             nuisance parameters. Default is zero.
+        stretch : float, optional
+            Stretch factor for the width of the true LBG redshift distribution.
+            (the default is 1.0)
         f_interlopers : float, optional
             Fraction of low-redshift interlopers. Same p(z) shape is used
             for interlopers, but shifted to the redshift corresponding to
             Lyman-/Balmer-break confusion. Default is zero.
+        dz_interlopers : float, optional
+            Amount by which to shift the distribution of interlopers (i.e.
+            true LBGs are not shifted). This corresponds to the DES delta z
+            nuisance parameters. (the default is zero)
+        stretch_interlopers : float, optional
+            Stretch factor for the width of the interloper redshift distribution.
+            (the default is 1.0)
         g_bias : float or None, optional
             Galaxy bias for LBG population. If None, value is pulled from the
             lbg_tools TomographicBin. Default is None.
         g_bias_inter : float or None, optional
-            Galaxy bias for the interloper population. If None, value is pulled from the
-            lbg_tools TomographicBin. Default is None.
+            Galaxy bias for the interloper population. If None, value is pulled
+            from the lbg_tools TomographicBin. Default is None.
         mag_bias : float or None, optional
             Magnification bias alpha value. If None, value is pulled from the
             lbg_tools TomographicBin. Default is None.
@@ -84,7 +97,10 @@ class Mapper:
         self.m5_min = m5_min  # type: ignore
         self.contamination = contamination
         self.dz = dz
+        self.stretch = stretch
         self.f_interlopers = f_interlopers
+        self.dz_interlopers = dz_interlopers
+        self.stretch_interlopers = stretch_interlopers
         self.g_bias = g_bias
         self.g_bias_inter = g_bias_inter
         self.mag_bias = mag_bias
@@ -257,7 +273,10 @@ class Mapper:
             mag_cut=self.mag_cut,
             m5_det=m5_det,
             dz=self.dz,
+            stretch=self.stretch,
             f_interlopers=self.f_interlopers,
+            dz_interlopers=self.dz_interlopers,
+            stretch_interlopers=self.stretch_interlopers,
             completeness_params=dict(validate_deep=False),
         )
 
