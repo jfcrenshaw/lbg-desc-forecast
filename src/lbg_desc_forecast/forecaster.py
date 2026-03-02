@@ -123,13 +123,12 @@ class FisherMatrix:
     def __add__(self, other: "FisherMatrix") -> "FisherMatrix":
         """Add two Fisher matrices."""
         # First check that keys all match
+        # TODO: relax this requirement by zero-padding Fisher matrices
+        # but need to make sure I handle indexing correct, calculation of new
+        # priors, new centers, etc. Can probably accomplish by setting priors
+        # to inf and Fisher info to zero for non-matching parameters
         if not set(self.keys) == set(other.keys):
             raise ValueError("Cannot add Fisher matrices whose keys do not match.")
-
-        # Also check that the centers match
-        # TODO: determine if you can combine Fisher matrices whose centers don't match
-        if not set(self.center) == set(other.center):
-            raise ValueError("Cannot add Fisher matrices whose centers do not match.")
 
         # Now get order of keys in second matrix
         idx = [other.keys.index(key) for key in self.keys]
@@ -142,6 +141,12 @@ class FisherMatrix:
 
         # Add priors
         matrix.priors = 1 / np.sqrt(1 / self.priors**2 + 1 / other.priors[idx] ** 2)
+
+        # Determine new center
+        matrix.center = matrix.covariance @ (
+            self.matrix_with_priors @ self.center
+            + other.matrix_with_priors[np.ix_(idx, idx)] @ other.center[idx]
+        )
 
         # Add matrices after re-ordering so keys match
         return matrix

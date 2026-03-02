@@ -8,13 +8,15 @@ from .utils import data_dir
 fisher_dir = data_dir / "fisher_matrices"
 
 
-def load_srd_forecast(year: int) -> FisherMatrix:
+def load_srd_forecast(year: int, marginalize: bool = True) -> FisherMatrix:
     """Load Fisher Matrix for SRD forecast.
 
     Parameters
     ----------
     year : int
         The year of LSST. Can be year 1 or 10.
+    marginalize : bool, optional
+        Whether to marginalize over nuisance parameters. Default is True.
 
     Returns
     -------
@@ -93,7 +95,8 @@ def load_srd_forecast(year: int) -> FisherMatrix:
     )
 
     # Marginalize over nuisance parameters
-    srd_fmatrix = srd_fmatrix.marginalize(srd_fmatrix.keys[7:])
+    if marginalize:
+        srd_fmatrix = srd_fmatrix.marginalize(srd_fmatrix.keys[7:])
 
     return srd_fmatrix
 

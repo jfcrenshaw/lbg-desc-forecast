@@ -310,7 +310,8 @@ class Mapper:
         pz = np.interp(z, *tb.pz)
 
         # Determine galaxy bias
-        z_interlopers, z_lbg = tb._get_z_grids()
+        z_interlopers = tb._z_interlopers
+        z_lbg = tb._z_lbg
         if self.g_bias_inter is None:
             b_interlopers = tb.g_bias[1][: z_interlopers.size]
         else:
@@ -328,7 +329,8 @@ class Mapper:
         # Determine magnification bias
         # alpha = 2.5 * d log10(N) / d mag
         # s = alpha / 2.5
-        z_interlopers, z_lbg = tb._get_z_grids()
+        z_interlopers = tb._z_interlopers
+        z_lbg = tb._z_lbg
         alpha = tb.mag_bias if self.mag_bias is None else self.mag_bias
         alpha = np.array([0.0] * len(z_interlopers) + [alpha] * len(z_lbg))
         sz = alpha / 2.5

@@ -19,3 +19,4 @@ dependencies:
   - rubin-sim
   - pip:
       - lbg_tools
+      - derivkit
