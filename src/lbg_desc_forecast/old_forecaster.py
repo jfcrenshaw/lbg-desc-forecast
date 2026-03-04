@@ -12,7 +12,364 @@ from .cosmo_factories import CosmoFactory
 from .mapper import Mapper
 from .utils import get_lensing_noise
 
-_LENSING_NOISE_CKK = None  # lazily filled
+
+class FisherMatrix:
+    """Class for storing and manipulating Fisher matrices."""
+
+    def __init__(
+        self,
+        matrix: np.ndarray,
+        center: np.ndarray,
+        keys: list[str],
+        priors: np.ndarray | None = None,
+    ) -> None:
+        """Create Fisher matrix.
+
+        Parameters
+        ----------
+        matrix0 : np.ndarray
+            The Fisher matrix
+        center : np.ndarray
+            Central value for each parameter
+        keys : list[str]
+            List of parameter names
+        priors : np.ndarray or None, optional
+            Gaussian prior for each parameter. Default is None.
+        """
+        self.matrix = matrix
+        self.center = center
+        self.keys = keys
+        self.priors = np.full_like(self.center, np.inf) if priors is None else priors
+
+    @classmethod
+    def load(cls, path: Path | str) -> "FisherMatrix":
+        """Load Fisher matrix from a file.
+
+        Parameters
+        ----------
+        path : Path or str
+            Path from which to load Fisher matrix
+
+        Returns
+        -------
+        FisherMatrix
+            The Fisher matrix loaded from the file
+        """
+        data = np.load(path)
+        return FisherMatrix(
+            matrix=data["matrix"],
+            center=data["center"],
+            keys=list(data["keys"]),
+            priors=data["priors"],
+        )
+
+    def save(self, path: Path | str) -> None:
+        """Save Fisher matrix to a file.
+
+        Parameters
+        ----------
+        path : path or str
+            Path at which to save the Fisher matrix
+        """
+        np.savez(
+            path,
+            matrix=self.matrix,
+            center=self.center,
+            keys=self.keys,
+            priors=self.priors,
+        )
+
+    def copy(self) -> "FisherMatrix":
+        """Make copy of the fisher matrix.
+
+        Returns
+        -------
+        FisherMatrix
+            Deep copy of the Fisher matrix
+        """
+        return deepcopy(self)
+
+    def set_prior(self, **kwargs) -> None:
+        """Set Gaussian prior for parameter.
+
+        Parameters
+        ----------
+        **kwargs
+            Values to set by keyword. E.g. h=0.05 places a Gaussian prior on
+            parameter "h" with a standard deviation of 0.05. Values must be
+            floats or None.
+        """
+        for key, val in kwargs.items():
+            idx = self.keys.index(key)
+            self.priors[idx] = np.inf if val is None else val
+
+    @property
+    def matrix_with_priors(self) -> np.ndarray:
+        """Fisher matrix, including the priors."""
+        # Get the Fisher matrix without priors
+        matrix = self.matrix.copy()
+
+        # Add priors to diagonal
+        idx = np.arange(len(matrix))
+        matrix[idx, idx] += 1 / self.priors**2
+
+        return matrix
+
+    @property
+    def covariance(self) -> np.ndarray:
+        """Parameter covariance matrix."""
+        return np.linalg.inv(self.matrix_with_priors)
+
+    def __add__(self, other: "FisherMatrix") -> "FisherMatrix":
+        """Add two Fisher matrices."""
+        # First check that keys all match
+        # TODO: relax this requirement by zero-padding Fisher matrices
+        # but need to make sure I handle indexing correct, calculation of new
+        # priors, new centers, etc. Can probably accomplish by setting priors
+        # to inf and Fisher info to zero for non-matching parameters
+        if not set(self.keys) == set(other.keys):
+            raise ValueError("Cannot add Fisher matrices whose keys do not match.")
+
+        # Now get order of keys in second matrix
+        idx = [other.keys.index(key) for key in self.keys]
+
+        # Duplicate Fisher matrix
+        matrix = self.copy()
+
+        # Add Fisher matrices
+        matrix.matrix = self.matrix + other.matrix[np.ix_(idx, idx)]
+
+        # Add priors
+        matrix.priors = 1 / np.sqrt(1 / self.priors**2 + 1 / other.priors[idx] ** 2)
+
+        # Determine new center
+        matrix.center = matrix.covariance @ (
+            self.matrix_with_priors @ self.center
+            + other.matrix_with_priors[np.ix_(idx, idx)] @ other.center[idx]
+        )
+
+        # Add matrices after re-ordering so keys match
+        return matrix
+
+    def fix(self, keys: str | list) -> "FisherMatrix":
+        """Fix certain parameters.
+
+        Parameters
+        ----------
+        keys : str or list
+            Name of a parameter to fix, or a list of parameters.
+
+        Returns
+        -------
+        FisherMatrix
+            New Fisher matrix with parameters fixed
+        """
+        # Cast to an iterable
+        keys = np.atleast_1d(keys)
+
+        # Get new matrix
+        fisher = self.copy()
+
+        # Loop over keys
+        for key in keys:
+            # Find index for this key
+            idx = fisher.keys.index(key)
+
+            # Remove corresponding row/column in the matrix
+            fisher.matrix = np.delete(
+                np.delete(fisher.matrix, idx, axis=0), idx, axis=1
+            )
+
+            # Remove corresponding center and prior
+            fisher.center = np.delete(fisher.center, idx)
+            fisher.priors = np.delete(fisher.priors, idx)
+
+            # Delete the key
+            del fisher.keys[idx]
+
+        return fisher
+
+    def marginalize(self, keys: str | list) -> "FisherMatrix":
+        """Marginalize over certain parameters.
+
+        Parameters
+        ----------
+        keys : str or list
+            Name of a parameter to marginalize over, or a list of parameters.
+
+        Returns
+        -------
+        FisherMatrix
+            New Fisher matrix with parameters marginalized
+        """
+        # Cast to an iterable
+        keys = np.atleast_1d(keys)
+
+        # Get new matrix and corresponding covariance
+        fisher = self.copy()
+        cov = fisher.covariance
+
+        # Loop over keys
+        for key in keys:
+            # Find index for this key
+            idx = fisher.keys.index(key)
+
+            # Remove corresponding row/column in the covariance
+            cov = np.delete(np.delete(cov, idx, axis=0), idx, axis=1)
+
+            # Remove corresponding center and prior
+            fisher.center = np.delete(fisher.center, idx)
+            fisher.priors = np.delete(fisher.priors, idx)
+
+            # Delete the key
+            del fisher.keys[idx]
+
+        # Invert back to Fisher matrix
+        matrix = np.linalg.inv(cov)
+
+        # Subtract priors from diagonal
+        # (this is because they were added in when creating the covariance
+        # matrix. If we want to keep them separate, we need to subtract them
+        # back out)
+        idx = np.arange(len(matrix))
+        matrix[idx, idx] -= 1 / fisher.priors**2
+        fisher.matrix = matrix
+
+        return fisher
+
+    def contour_1d(self, key: str, grid: np.ndarray) -> np.ndarray:
+        """Calculate 1D marginalized distribution of the parameter
+
+        Parameters
+        ----------
+        key : str
+            Name of parameter
+        grid : np.ndarray
+            Grid along which to evaluate distribution
+
+        Returns
+        -------
+        np.ndarray
+            1D marginalized distribution
+        """
+        # Get index of parameter
+        idx = self.keys.index(key)
+
+        # Get center standard deviation of the parameter
+        center = self.center[idx]
+        sig = np.sqrt(self.covariance[idx, idx])
+        print(center, sig)
+
+        # Calculate contour
+        contour = np.exp(-((grid - center) ** 2) / (2 * sig**2))
+        contour /= np.sqrt(2 * np.pi * sig**2)
+
+        return contour
+
+    def contour_2d(
+        self,
+        keys: list[str],
+        nsig: float = 1.0,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Evaluate 2D N-sigma Gaussian contour.
+
+        Parameters
+        ----------
+        keys : list[str]
+            List of 2 parameters for which to create the contour
+        nsig : float, optional
+            Number of sigma. Default is 1.0
+
+        Returns
+        -------
+        np.ndarray
+            N-sigma contour
+        """
+        # Get sub-covariance
+        if len(keys) != 2:
+            raise ValueError("Must provide two keys.")
+        idx = [self.keys.index(key) for key in keys]
+        cov = self.covariance[np.ix_(idx, idx)]
+
+        # Eigen-decomposition to enable rotation
+        val, rot = np.linalg.eig(cov)
+
+        # Scale by ... TODO fix this comment
+        q = 2 * norm.cdf(nsig) - 1
+        r2 = chi2.ppf(q, 2)
+        val = np.sqrt(val * r2)
+
+        # 1000 points along ellipse
+        t = np.linspace(0, 2 * np.pi, 1000)
+        xy = np.stack((np.cos(t), np.sin(t)), axis=-1)
+
+        # Calculate ellipse points
+        center = self.center[idx]
+        x, y = nsig * rot @ (val * xy).T + np.array(center).reshape(2, 1)
+
+        return x, y
+
+    def sample(
+        self,
+        N: int,
+        random_state: int | np.random.Generator | None = None,
+    ) -> np.ndarray:
+        """Sample parameters from the Gaussian covariance.
+
+        Parameters
+        ----------
+        N : int
+            Number of samples to return
+        random_state : int, np.random.Generator, or None, optional
+            Value to set the random state. Default is None.
+
+        Returns
+        -------
+        np.ndarray
+            2D array of samples, of shape (N x len(self.keys))
+        """
+        # Resolve the random generator
+        if not isinstance(random_state, np.random.Generator):
+            random_state = np.random.default_rng(random_state)
+
+        # Draw samples
+        samples = multivariate_normal.rvs(
+            self.center,
+            self.covariance,
+            size=N,
+            random_state=random_state,
+        )
+
+        return samples
+
+    def figure_of_merit(self, keys: list[str]) -> float:
+        """Calculate figure of merit for the pair of parameters.
+
+        Parameters
+        ----------
+        keys : list[str]
+            List of 2 parameters for which to create the contour
+
+        Returns
+        -------
+        float
+            Figure of merit
+        """
+        # Get sub-covariance
+        if len(keys) != 2:
+            raise ValueError("Must provide two keys.")
+        idx = [self.keys.index(key) for key in keys]
+        cov = self.covariance[np.ix_(idx, idx)]
+
+        # Eigen-decomposition to enable rotation
+        val, rot = np.linalg.eig(cov)
+
+        # Scale by ... TODO fix this comment
+        q = 2 * norm.cdf(1) - 1
+        r2 = chi2.ppf(q, 2)
+        val = np.sqrt(val * r2)
+
+        return 1 / np.prod(val)
 
 
 class Forecaster:
@@ -93,52 +450,6 @@ class Forecaster:
         self.cov: np.ndarray | None = None
         self.cov_inv: np.ndarray | None = None
 
-        # Caches to avoid rebuilding dicts / spectra on every call
-        self._cache_valid = False
-        self._keys_cache: list[str] = []
-        self._values_cache: np.ndarray | None = None
-        self._dparams_cache: np.ndarray | None = None
-
-        # Fiducial caches keyed by add_noise (True/False)
-        # add_noise -> band -> (Cgg_binned, Ckg_binned)
-        self._fid_signal_cache: dict[
-            bool, dict[str, tuple[np.ndarray | None, np.ndarray | None]]
-        ] = {True: {}, False: {}}
-
-        # add_noise -> binned Ckk
-        self._fid_kk_cache: dict[bool, np.ndarray | None] = {True: None,
-                                                             False: None}
-
-        # Optional: cache the bands set for fast membership checks
-        self._bands_set = {m.drop_band for m in self.mappers}
-
-    def _refresh_param_cache(self) -> None:
-        """Build keys/values/dparams once from current self.cosmo + self.mappers."""
-        all_params = self.cosmo.params.copy()
-        for mapper in self.mappers:
-            band = mapper.drop_band
-            all_params[f"{band}_dz"] = mapper.dz
-            all_params[f"{band}_f_interlopers"] = mapper.f_interlopers
-            all_params[f"{band}_g_bias"] = mapper.g_bias
-            all_params[f"{band}_g_bias_inter"] = mapper.g_bias_inter
-            all_params[f"{band}_mag_bias"] = mapper.mag_bias
-
-        keys = list(all_params.keys())
-        values = np.asarray(list(all_params.values()), dtype=float)
-        dparams = np.clip(self.step_frac * values, self.step_min, None)
-
-        self._keys_cache = keys
-        self._values_cache = values
-        self._dparams_cache = dparams
-        self._cache_valid = True
-
-    def invalidate_cache(self) -> None:
-        """Call this if cosmo or mapper params change after init."""
-        self._cache_valid = False
-        self._fid_signal_cache = {True: {}, False: {}}
-        self._fid_kk_cache = {True: None, False: None}
-        self._bands_set = {m.drop_band for m in self.mappers}
-
     @property
     def cosmo_params(self) -> dict:
         """Parameters associated with the cosmological model"""
@@ -172,55 +483,17 @@ class Forecaster:
 
     @property
     def keys(self) -> list[str]:
-        if not self._cache_valid:
-            self._refresh_param_cache()
-        return self._keys_cache
+        """Keys for all parameters"""
+        return list(self.params.keys())
 
     @property
     def values(self) -> np.ndarray:
-        if not self._cache_valid:
-            self._refresh_param_cache()
-        assert self._values_cache is not None
-        return self._values_cache
+        """Values for all parameters"""
+        return np.array(list(self.params.values()))
 
     @property
     def dparams(self) -> np.ndarray:
-        if not self._cache_valid:
-            self._refresh_param_cache()
-        assert self._dparams_cache is not None
-        return self._dparams_cache
-
-    def _ensure_fiducial_signal_cache(self, add_noise: bool = True) -> None:
-        """Compute and cache fiducial binned spectra for this add_noise mode."""
-        # Already cached?
-        if self._fid_signal_cache[add_noise] and (
-            (self._fid_kk_cache[add_noise] is not None) or (not self.lensing)
-        ):
-            return
-
-        global _LENSING_NOISE_CKK
-        if add_noise and _LENSING_NOISE_CKK is None:
-            _LENSING_NOISE_CKK = get_lensing_noise()[1]
-
-        sig_cache: dict[str, tuple[np.ndarray | None, np.ndarray | None]] = {}
-        kk_binned: np.ndarray | None = None
-
-        for mapper in self.mappers:
-            _, Cgg, Ckg, Ckk, Cff = mapper.calc_spectra(self.cosmo.cosmology)
-
-            if add_noise:
-                Cgg = Cgg + mapper.shot_noise + mapper.contamination * Cff
-                Ckk = Ckk + _LENSING_NOISE_CKK  # type: ignore[operator]
-
-            Cgg_b = self.bins.bin_cell(Cgg[: self.ell_max + 1]) if self.clustering else None
-            Ckg_b = self.bins.bin_cell(Ckg[: self.ell_max + 1]) if self.xcorr else None
-            sig_cache[mapper.drop_band] = (Cgg_b, Ckg_b)
-
-            if self.lensing and kk_binned is None:
-                kk_binned = self.bins.bin_cell(Ckk[: self.ell_max + 1])
-
-        self._fid_signal_cache[add_noise] = sig_cache
-        self._fid_kk_cache[add_noise] = kk_binned
+        return np.clip(self.step_frac * self.values, self.step_min, None)
 
     def _step_by_key(
         self,
@@ -247,20 +520,26 @@ class Forecaster:
         cosmo = self.cosmo.copy()
         mappers = {mapper.drop_band: mapper.copy() for mapper in self.mappers}
 
+        # If we are not incrementing any parameters, just return these
         if key is None:
             return cosmo, list(mappers.values())
 
-        keys = self.keys
-        if key not in keys:
+        # Otherwise, check this is a valid key
+        if key not in self.keys:
             raise ValueError("key not in list of parameters.")
 
-        idx = keys.index(key)
-        new_val = float(self.values[idx] + sign * self.dparams[idx])
+        # Increment the parameter
+        idx = self.keys.index(key)
+        new_val = self.params[key] + sign * self.dparams[idx]
 
+        # Set the new value
         if key in cosmo.params:
             setattr(cosmo, key, new_val)
         else:
+            # Split dropout band from key name
             band, subkey = key.split("_", maxsplit=1)
+
+            # And increment parameter in corresponding mapper
             setattr(mappers[band], subkey, new_val)
 
         return cosmo, list(mappers.values())
@@ -295,106 +574,35 @@ class Forecaster:
         np.ndarray
             Signal vector
         """
-        if sign not in (+1, -1):
+        if sign not in [+1, -1]:
             raise ValueError("sign must be +/- 1")
 
-            # --- Fiducial fast path (no stepping) ---
-        if param_to_step is None:
-            self._ensure_fiducial_signal_cache(add_noise=add_noise)
-            signal_parts: list[np.ndarray] = []
-
-            for mapper in self.mappers:
-                Cgg_b, Ckg_b = self._fid_signal_cache[add_noise][
-                    mapper.drop_band]
-                if self.clustering:
-                    assert Cgg_b is not None
-                    signal_parts.append(Cgg_b)
-                if self.xcorr:
-                    assert Ckg_b is not None
-                    signal_parts.append(Ckg_b)
-
-            if self.lensing:
-                kk = self._fid_kk_cache[add_noise]
-                assert kk is not None
-                signal_parts.append(kk)
-
-            return np.concatenate(signal_parts)
-
-            # --- Identify what we are stepping ---
-        is_cosmo = param_to_step in self.cosmo.params
-        stepped_band: str | None = None
-        if not is_cosmo and "_" in param_to_step:
-            stepped_band = param_to_step.split("_", 1)[0]
-
-        # --- Single-band nuisance step fast path ---
-        if (not is_cosmo) and (stepped_band is not None) and (
-                stepped_band in self._bands_set):
-            self._ensure_fiducial_signal_cache(add_noise=add_noise)
-            cosmo, mappers = self._step_by_key(param_to_step, sign)
-
-            signal_parts: list[np.ndarray] = []
-
-            for mapper in mappers:
-                band = mapper.drop_band
-
-                if band != stepped_band:
-                    Cgg_b, Ckg_b = self._fid_signal_cache[add_noise][band]
-                else:
-                    _, Cgg, Ckg, _, Cff = mapper.calc_spectra(cosmo.cosmology)
-                    if add_noise:
-                        Cgg = Cgg + mapper.shot_noise + mapper.contamination * Cff
-
-                    Cgg_b = self.bins.bin_cell(
-                        Cgg[: self.ell_max + 1]) if self.clustering else None
-                    Ckg_b = self.bins.bin_cell(
-                        Ckg[: self.ell_max + 1]) if self.xcorr else None
-
-                if self.clustering:
-                    assert Cgg_b is not None
-                    signal_parts.append(Cgg_b)
-                if self.xcorr:
-                    assert Ckg_b is not None
-                    signal_parts.append(Ckg_b)
-
-            # Ckk unchanged for band-only nuisance step (depends on cosmo + noise)
-            if self.lensing:
-                kk = self._fid_kk_cache[add_noise]
-                assert kk is not None
-                signal_parts.append(kk)
-
-            return np.concatenate(signal_parts)
-
-        # --- Full recompute path (cosmo step or ambiguous key) ---
-        global _LENSING_NOISE_CKK
-        if add_noise and _LENSING_NOISE_CKK is None:
-            _LENSING_NOISE_CKK = get_lensing_noise()[1]
-
+        # Increment parameters
         cosmo, mappers = self._step_by_key(param_to_step, sign)
 
-        signal_parts: list[np.ndarray] = []
-        kk_binned: np.ndarray | None = None
-
+        # Get the NaMaster bins object
+        signal = []
         for mapper in mappers:
-            _, Cgg, Ckg, Ckk, Cff = mapper.calc_spectra(cosmo.cosmology)
-
+            # Get spectra
+            ell, Cgg, Ckg, Ckk, Cff = mapper.calc_spectra(cosmo.cosmology)
             if add_noise:
-                Cgg = Cgg + mapper.shot_noise + mapper.contamination * Cff
-                Ckk = Ckk + _LENSING_NOISE_CKK  # type: ignore[operator]
+                Cgg += mapper.shot_noise
+                Cgg += mapper.contamination * Cff
+                Ckk += get_lensing_noise()[1]
 
+            # Bin the C_ells
             if self.clustering:
-                signal_parts.append(
-                    self.bins.bin_cell(Cgg[: self.ell_max + 1]))
+                signal.append(self.bins.bin_cell(Cgg[: self.ell_max + 1]))
             if self.xcorr:
-                signal_parts.append(
-                    self.bins.bin_cell(Ckg[: self.ell_max + 1]))
-            if self.lensing and kk_binned is None:
-                kk_binned = self.bins.bin_cell(Ckk[: self.ell_max + 1])
+                signal.append(self.bins.bin_cell(Ckg[: self.ell_max + 1]))
 
+        # Add single lensing signal
         if self.lensing:
-            assert kk_binned is not None
-            signal_parts.append(kk_binned)
+            signal.append(self.bins.bin_cell(Ckk[: self.ell_max + 1]))
 
-        return np.concatenate(signal_parts)
+        signal = np.concatenate(signal)
+
+        return signal
 
     def _create_cov_products(self, mapper: Mapper) -> tuple[
         np.ndarray,
@@ -646,3 +854,39 @@ class Forecaster:
         self.cov = Cov
         self.cov_inv = np.linalg.inv(Cov)
 
+    def create_fisher_matrix(self) -> None:
+        """Create Fisher matrix for forecast.
+
+        sets self.fisher_matrix attribute
+        """
+        if self.cov is None:
+            raise ValueError(
+                "Covariance matrix is still None. "
+                "You must first run self.create_cov()."
+            )
+
+        # Calculate derivative of the signal with respect to each parameter
+        keys = self.keys
+        dsig = []
+        for i, key in enumerate(keys):
+            dsig.append(
+                (self.create_signal(key, +1) - self.create_signal(key, -1))
+                / (2 * self.dparams[i])
+            )
+
+        # Loop over parameter pairs and calculate fisher entry
+        fisher = np.zeros((len(keys), len(keys)))
+        for i in range(len(keys)):
+            for j in range(i, len(keys)):
+                fisher[i, j] = np.dot(
+                    dsig[i], np.dot(self.cov_inv, dsig[j].reshape(-1, 1))
+                )[0]
+
+        # Make symmetric
+        fisher += np.triu(fisher, k=1).T
+
+        self.fisher_matrix = FisherMatrix(
+            matrix=fisher,
+            center=self.values,
+            keys=self.keys,
+        )
